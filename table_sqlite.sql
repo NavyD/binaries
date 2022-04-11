@@ -1,10 +1,9 @@
-
-DELETE FROM `updated_info`;
+DROP TABLE IF EXISTS updated_info;
 
 CREATE TABLE IF NOT EXISTS `updated_info` (
     `id` INT PRIMARY KEY NOT NULL,
-    `name` TEXT NOT NULL,
-    `version` TEXT NOT NULL,
+    `name` VARCHAR(20) NOT NULL,
+    `version` VARCHAR(20) NOT NULL,
     `create_time` datetime NOT NULL,
     `updated_time` datetime NOT NULL
 );
@@ -24,5 +23,5 @@ VALUES
         'tldr',
         'v0.2.0',
         '2020-06-17 20:10:23',
-        '2020-06-17 20:10:23'
+        '2020-07-17 21:10:23'
     );

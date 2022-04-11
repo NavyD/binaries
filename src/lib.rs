@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 pub mod dao;
 pub mod github;
 pub mod manager;
