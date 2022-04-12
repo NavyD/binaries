@@ -56,6 +56,10 @@ pub struct Asset {
 pub mod config {
     use std::path::PathBuf;
 
+    use getset::{Setters, Getters};
+
+    #[derive(Debug, Getters, Setters)]
+    #[getset(get = "pub", set, get_mut)]
     pub struct Binary {
         name: String,
         path: PathBuf,
@@ -63,11 +67,13 @@ pub mod config {
         hook: Option<Hook>,
     }
 
+    #[derive(Debug, Getters, Setters)]
     pub struct Hook {
         work_dir: Option<PathBuf>,
         at: Vec<HookAt>
     }
 
+    #[derive(Debug)]
     pub enum HookAt {
         Update(String),
         Install(String),

@@ -1,11 +1,13 @@
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use futures_util::TryStreamExt;
+use getset::{Getters, Setters};
 use once_cell::sync::Lazy;
 use sqlx::{sqlite::SqlitePoolOptions, Connection, SqliteConnection, SqlitePool};
 // static RB: Lazy<Rbatis> = Lazy::new(Rbatis::new);
 
-#[derive(sqlx::FromRow, Debug, Clone, PartialEq, Eq)]
+#[derive(sqlx::FromRow, Debug, Clone, PartialEq, Eq, Getters, Setters)]
+#[getset(get = "pub", set = "pub")]
 pub struct UpdatedInfo {
     id: u32,
     name: String,
@@ -27,7 +29,11 @@ impl Mapper {
     }
 
     pub async fn select_list_by_name(&self, name: &str) -> Result<Vec<UpdatedInfo>> {
-        todo!()
+        sqlx::query_as::<_, UpdatedInfo>("select * from updated_info where name = ?")
+            .bind(name)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn insert(&self, info: &UpdatedInfo) -> Result<u32> {
@@ -88,6 +94,22 @@ mod tests {
         .join()
         .unwrap()
     });
+
+    #[test]
+    fn test_select_name() -> Result<()> {
+        TOKIO_RT.block_on(async {
+            let name = "btm";
+            let infos = MAPPER.select_list_by_name(name).await?;
+            assert_eq!(infos.len(), 2);
+            infos.iter().for_each(|i| {
+                assert_eq!(i.name(), name);
+            });
+
+            let res = MAPPER.select_list_by_name("___no___").await?;
+            assert!(res.is_empty());
+            Ok::<_, Error>(())
+        })
+    }
 
     #[test]
     fn test_select_all() -> Result<()> {
