@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-pub mod dao;
+pub mod updated_info;
 pub mod github;
 pub mod manager;
 pub mod util;
