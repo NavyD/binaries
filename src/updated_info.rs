@@ -16,6 +16,7 @@ pub struct UpdatedInfo {
     create_time: DateTime<Local>,
 }
 
+#[derive(Debug)]
 pub struct Mapper {
     pool: SqlitePool,
 }

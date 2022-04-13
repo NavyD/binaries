@@ -53,29 +53,18 @@ pub struct Asset {
     download_count: usize,
 }
 
-pub mod config {
-    use std::path::PathBuf;
+use getset::{Getters, Setters};
 
-    use getset::{Setters, Getters};
+use crate::config::Hook;
 
-    #[derive(Debug, Getters, Setters)]
-    #[getset(get = "pub", set, get_mut)]
-    pub struct Binary {
-        name: String,
-        path: PathBuf,
-        ver: String,
-        hook: Option<Hook>,
-    }
+#[derive(Debug, Getters, Setters)]
+#[getset(get = "pub", set, get_mut)]
+pub struct Binary {
+    name: String,
+    path: PathBuf,
+    ver: String,
+    hook: Option<Hook>,
 
-    #[derive(Debug, Getters, Setters)]
-    pub struct Hook {
-        work_dir: Option<PathBuf>,
-        at: Vec<HookAt>
-    }
-
-    #[derive(Debug)]
-    pub enum HookAt {
-        Update(String),
-        Install(String),
-    }
+    /// a glob of executable file in zip. for help to comfirm exe bin
+    exe_glob: Option<String>,
 }

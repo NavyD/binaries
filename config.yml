@@ -12,8 +12,10 @@ github-bins:
       # 为空时默认使用all releasees中的最新可能包含prerelease
       ver: latest
       path: ~/.local/bin
+      exe-glob: btm
       hook:
         work-dir: .
         at:
           update: bash -c ''
           install:
+          extract: 

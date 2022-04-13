@@ -4,6 +4,7 @@ pub mod github;
 pub mod manager;
 pub mod updated_info;
 pub mod util;
+pub mod config;
 
 pub static CRATE_NAME: &str = env!("CARGO_CRATE_NAME");
 
@@ -19,27 +20,20 @@ pub static CRATE_NAME: &str = env!("CARGO_CRATE_NAME");
 
 use anyhow::Result;
 use async_trait::async_trait;
-use github::config::Binary;
+use github::Binary;
 use once_cell::sync::Lazy;
+use url::Url;
 
 #[async_trait]
 trait Api: Sync {
-    async fn latest_ver(&self) -> Result<String>;
+    async fn latest_ver(&self) -> Result<&str>;
 
-    async fn installed_url(&self) -> Result<url::Url>;
+    async fn installed_url(&self) -> Result<&Url>;
 
-    async fn updatable_url(&self) -> Result<url::Url>;
+    async fn updatable_url(&self) -> Result<&Url>;
 }
 
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-};
 
-pub struct Config {
-    archs: Option<HashMap<String, HashSet<String>>>,
-    github_bins: Vec<Binary>,
-}
 
 #[cfg(test)]
 mod tests {

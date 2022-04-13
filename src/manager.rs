@@ -1,87 +1,115 @@
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-};
+use std::{os::unix::prelude::PermissionsExt, path::Path, str::FromStr};
 
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Local};
+use directories::{BaseDirs, ProjectDirs};
+use futures_util::StreamExt;
+use getset::Getters;
+use globset::Glob;
+use log::{info, trace, warn};
 use mime::Mime;
 use mime_guess::MimeGuess;
 use reqwest::{Client, Request};
 use std::env::consts::ARCH;
-use tokio::{sync::Mutex, fs::File, io::AsyncWriteExt};
+use tokio::{fs::File, io::AsyncWriteExt, sync::Mutex};
 use url::Url;
-use futures_util::StreamExt;
+use walkdir::WalkDir;
 
 use crate::{
-    github::{config::Binary, Asset},
-    updated_info::Mapper,
-    Api, Config,
+    config::{Config, Hook},
+    github::{self, Asset},
+    updated_info::{Mapper, UpdatedInfo},
+    util::{extract, find_one_exe_with_glob, run_cmd},
+    Api,
 };
 
-struct BinContxt<'a> {
-    bin: GithubBinConfig,
-    assets: Option<Vec<Asset>>,
-    config: &'a Config,
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
+
+trait Binary {
+    fn name(&self) -> &str;
+
+    fn version(&self) -> Version;
+
+    fn exe_glob(&self) -> Option<&str>;
+
+    fn hook(&self) -> Option<Hook>;
 }
 
-impl<'a> BinContxt<'a> {
-    async fn auto_select(&self) -> Option<&Asset> {
-        // if self.assets.as_ref().map_or(true, Vec::is_empty) {
-        //     return None;
-        // }
-        let assets = self.assets.as_ref()?;
-        for asset in assets {}
-        todo!()
-    }
+enum Version {
+    Latest,
+    Some(String),
 }
 
-struct GithubBinConfig {
-    owner: String,
-    repo: String,
-    version: Option<String>,
-    tag: Option<String>,
-    pattern: Option<String>,
+#[derive(Debug, Getters)]
+#[getset(get = "pub")]
+struct BinaryManager<T: Api, B: Binary> {
+    api: T,
+    bin: B,
+    mapper: Mapper,
+    client: Client,
+    config: Config,
+    project_dirs: ProjectDirs,
+    base_dirs: BaseDirs,
 }
 
-struct Dir {}
-
-#[async_trait]
-trait BinaryManager {
-    type API: Api;
-
-    fn api(&self) -> &Self::API;
-
-    fn mapper(&self) -> &Mapper;
-
-    fn binary_name(&self) -> &str;
-
-    fn client(&self) -> &Client;
-
-    fn project_dir<P: AsRef<Path>>(&self) -> P;
-
-    async fn last_updated_ver(&self) -> Result<Option<String>> {
-        let mut vers = self.updated_vers().await?;
-        vers.sort_by(|a, b| b.cmp(a));
-        Ok(vers.first().cloned())
-    }
-
-    async fn updated_vers(&self) -> Result<Vec<String>> {
-        self.mapper()
-            .select_list_by_name(self.binary_name())
-            .await
-            .map(|a| a.into_iter().map(|e| e.version().to_owned()).collect())
-            .map_err(Into::into)
-    }
-
-    async fn current_ver(&self) -> Result<Option<String>> {
-        self.last_updated_ver().await
-    }
-
-    async fn install(&self) -> Result<()> {
+impl<T: Api, B: Binary> BinaryManager<T, B> {
+    pub async fn install(&self) -> Result<()> {
         // download
         let url = self.api().installed_url().await?;
+
+        let (cache_path, content_type) = self.download(url).await?;
+        let to = self.project_dirs.data_dir().join(self.bin.name());
+        {
+            let (from, to) = (cache_path.clone(), to.clone());
+            if let Some(x_cmd) = self
+                .bin
+                .hook()
+                .as_ref()
+                .and_then(|h| h.action().extract().as_deref())
+            {
+                run_cmd(x_cmd, cache_path).await?;
+                // 解压到同名文件夹中 在移动到to中
+                // let a = url
+                //     .path_segments()
+                //     .and_then(|seg| seg.last())
+                //     .ok_or_else(|| anyhow!("not found filename for {}", url))?
+                //     .parse::<PathBuf>()?.
+                
+            } else {
+                tokio::task::spawn_blocking(move || extract(from, to, content_type.as_deref()))
+                    .await??;
+            }
+        }
+
+        self.link_to_exe_dir(to).await?;
+        // hook
+        todo!()
+    }
+
+    async fn link_to_exe_dir(&self, base: impl AsRef<Path>) -> Result<()> {
+        let base = base.as_ref();
+        let glob_pat = self
+            .bin
+            .exe_glob()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("**/*{}*", self.bin.name()));
+
+        let src = {
+            let base = base.to_path_buf();
+            tokio::task::spawn_blocking(move || find_one_exe_with_glob(&glob_pat, base)).await??
+        };
+        let dst = self.dst_link_path()?;
+
+        info!("sym linking {} to {}", src.display(), dst.display());
+        tokio::fs::symlink(src, dst).await?;
+        Ok(())
+    }
+
+    async fn download(&self, url: &Url) -> Result<(PathBuf, Option<String>)> {
         let filename = url
             .path_segments()
             .and_then(|seg| seg.last())
@@ -90,32 +118,81 @@ trait BinaryManager {
 
         let resp = self.client().get(url.as_ref()).send().await?;
 
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(ToString::to_string);
         let content_len = resp
             .content_length()
             .ok_or_else(|| anyhow!("not found content len for {}", url))?;
-        let cache_file_path = dirs::cache_dir()
-            .map(|p| p.join(filename))
-            .ok_or_else(|| anyhow!("not found cache dir"))?;
 
-        if !cache_file_path.exists() {
-            let mut file = File::create(cache_file_path).await?;
-            let mut stream = resp.bytes_stream();
-
-            while let Some(chunk) = stream.next().await {
-                file.write_all(&chunk?).await?;
+        let cache_path = self.project_dirs.cache_dir().join(filename);
+        if let Ok(data) = tokio::fs::metadata(&cache_path).await {
+            if data.len() == content_len {
+                info!(
+                    "found cached file {} with len {} for download url: {}",
+                    cache_path.display(),
+                    content_len,
+                    url
+                );
+                return Ok((cache_path, content_type));
+            } else {
+                warn!(
+                    "overwriting an existing file {} for url: {}",
+                    cache_path.display(),
+                    url
+                );
             }
-        } else if cache_file_path.metadata()?.len() != content_len {
-            bail!("Found an existing file: {}", cache_file_path.display());
         }
-        // extract
 
-        // link to exec path
+        let mut file = File::create(&cache_path).await?;
+        let mut stream = resp.bytes_stream();
 
-        // hook
-        todo!()
+        trace!("downloading to {} for url: {}", cache_path.display(), url);
+        while let Some(chunk) = stream.next().await {
+            file.write_all(&chunk?).await?;
+        }
+
+        Ok((cache_path, content_type))
     }
 
-    async fn update(&self) -> Result<()>;
-
-    async fn uninstall(&self) -> Result<()>;
+    fn dst_link_path(&self) -> Result<PathBuf> {
+        let dst = self
+            .config
+            .executable_dir()
+            .as_ref()
+            .cloned()
+            .or_else(|| self.base_dirs.executable_dir().map(|v| v.to_owned()))
+            .ok_or_else(|| anyhow!("not found executable dir"))?
+            .join(self.bin.name());
+        Ok(dst)
+    }
 }
+
+// #[async_trait]
+// trait BinaryManager {
+//     type API: Api;
+
+//     fn api(&self) -> &Self::API;
+
+//     fn mapper(&self) -> &Mapper;
+
+//     fn binary_name(&self) -> &str;
+
+//     fn client(&self) -> &Client;
+
+//     fn config(&self) -> &Config;
+
+//     async fn updated_infos(&self) -> Result<&[UpdatedInfo]>;
+
+//     async fn last_updated_ver(&self) -> Result<Option<String>>;
+
+//     async fn current_ver(&self) -> Result<Option<String>> {
+//         self.last_updated_ver().await
+//     }
+
+//     async fn update(&self) -> Result<()>;
+
+//     async fn uninstall(&self) -> Result<()>;
+// }
