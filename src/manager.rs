@@ -1,17 +1,19 @@
+use std::cmp::Ordering;
 use std::{os::unix::prelude::PermissionsExt, path::Path, str::FromStr};
 
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Local};
 use directories::{BaseDirs, ProjectDirs};
-use futures_util::StreamExt;
+use futures_util::{stream, FutureExt, Stream, StreamExt};
 use getset::Getters;
 use globset::Glob;
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 use mime::Mime;
 use mime_guess::MimeGuess;
 use reqwest::{Client, Request};
 use std::env::consts::ARCH;
+use tokio::fs as afs;
 use tokio::{fs::File, io::AsyncWriteExt, sync::Mutex};
 use url::Url;
 use walkdir::WalkDir;
@@ -46,71 +48,193 @@ enum Version {
 
 #[derive(Debug, Getters)]
 #[getset(get = "pub")]
-struct BinaryManager<T: Api, B: Binary> {
+struct BinaryManager<'a, T: Api, B: Binary> {
     api: T,
     bin: B,
-    mapper: Mapper,
+    mapper: &'a Mapper,
     client: Client,
-    config: Config,
-    project_dirs: ProjectDirs,
-    base_dirs: BaseDirs,
+    data_dir: &'a Path,
+    cache_dir: &'a Path,
+    executable_dir: &'a Path,
 }
 
-impl<T: Api, B: Binary> BinaryManager<T, B> {
+impl<'a, T: Api, B: Binary> BinaryManager<'a, T, B> {
+    pub async fn updateable_ver(&self) -> Result<Option<(String, String)>> {
+        if !self.is_installed().await? {
+            return Ok(None);
+        }
+        if let Version::Some(_) = self.bin.version() {
+            return Ok(None);
+        }
+
+        let mut infos = self.mapper.select_list_by_name(self.bin.name()).await?;
+        infos.sort_by(|a, b| b.create_time().cmp(a.create_time()));
+        if let Some(info) = infos.first() {
+            let latest_ver = self.api.latest_ver().await?;
+            if latest_ver > info.version().as_str() {
+                return Ok(Some((latest_ver.to_owned(), info.version().to_owned())));
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn update(&self) -> Result<()> {
+        if let Some((new, old)) = self.updateable_ver().await? {
+            info!("updating version {} from {}", new, old);
+            self.uninstall().await?;
+            self.install().await?;
+            Ok(())
+        } else {
+            bail!("can not update")
+        }
+    }
+
+    pub async fn uninstall(&self) -> Result<()> {
+        let link = self.link_path();
+        if let Err(e) = afs::remove_file(&link).await {
+            debug!("failed to remove a link file {}: {}", link.display(), e);
+        }
+
+        let bin_dir = self.bin_data_dir();
+        if let Err(e) = afs::remove_dir_all(&bin_dir).await {
+            debug!("failed to remove a dir {}: {}", bin_dir.display(), e);
+        }
+
+        // TODO: remove temp dir of extract hook
+        Ok(())
+    }
+
     pub async fn install(&self) -> Result<()> {
         // download
+        let ver = match self.bin.version() {
+            Version::Latest => self.api.latest_ver().await?.to_owned(),
+            Version::Some(ver) => ver,
+        };
         let url = self.api().installed_url().await?;
+        info!(
+            "installing {} version {} for url: {}",
+            self.bin.name(),
+            ver,
+            url
+        );
 
-        let (cache_path, content_type) = self.download(url).await?;
-        let to = self.project_dirs.data_dir().join(self.bin.name());
+        let (download_path, content_type) = self.download(url).await?;
+        let to = self.bin_data_dir();
+        afs::create_dir_all(&to).await?;
 
         // try use custom to extract
-        if let Some(x_cmd) = self
+        self.extract(&download_path, &to, content_type).await?;
+
+        // link to exe dir
+        let src = {
+            let glob_pat = self
+                .bin
+                .exe_glob()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| format!("**/*{}*", self.bin.name()));
+            let base = to.to_path_buf();
+            tokio::task::spawn_blocking(move || find_one_exe_with_glob(base, &glob_pat)).await??
+        };
+        let dst = self.link_path();
+        if afs::metadata(&dst).await.is_ok() {
+            bail!("found a existing file {} in exe dir", dst.display());
+        }
+
+        info!("sym linking {} to {}", src.display(), dst.display());
+        tokio::fs::symlink(src, dst).await?;
+
+        // inserto into db
+        let info = UpdatedInfo::with_installed(self.bin.name(), &ver);
+        debug!("inserting info to db: {:?}", info);
+        self.mapper.insert(&info).await?;
+        Ok(())
+    }
+
+    fn link_path(&self) -> PathBuf {
+        self.executable_dir.join(self.bin.name())
+    }
+
+    fn bin_data_dir(&self) -> PathBuf {
+        self.data_dir.join(self.bin.name())
+    }
+
+    /// 尝试解压from到to中
+    ///
+    /// 如果配置了extract hook，则使用自定义的cmd解压，在from级目录上可解压在`bin.{name,filename}`目录。
+    /// 否则使用通用解压
+    ///
+    /// 如果之前已存在对应的目录，则不会解压直接返回认为是缓存
+    ///
+    /// # Error
+    ///
+    /// * 如果extract hook前中已存在`bin.{name,filename}`目录
+    /// * 或之后不存在`bin.{name,filename}`目录
+    /// * 如果无法使用通用解压
+    async fn extract<P>(&self, from: P, to: P, content_type: Option<String>) -> Result<()>
+    where
+        P: AsRef<Path>,
+    {
+        let (from, to) = (from.as_ref().to_owned(), to.as_ref().to_owned());
+        let word_dir = from
+            .parent()
+            .ok_or_else(|| anyhow!("not found parent dir for: {}", from.display()))?;
+        // try use custom to extract
+        if let Some(cmd) = self
             .bin
             .hook()
             .as_ref()
             .and_then(|h| h.action().extract().as_deref())
         {
-            run_cmd(x_cmd, &cache_path).await?;
-            let extracted_dir = cache_path
+            // before: check if exists
+            let paths = from
                 .file_stem()
-                .map(|name| cache_path.join(name))
-                .unwrap_or_else(|| cache_path.with_file_name(self.bin.name()));
-            if !extracted_dir.is_dir() {
-                bail!("not found extracted target dir in {}", cache_path.display());
+                .map(|name| word_dir.join(name))
+                .into_iter()
+                .chain(std::iter::once_with(|| {
+                    word_dir.with_file_name(self.bin.name())
+                }))
+                .collect::<Vec<_>>();
+            // if any exists
+            for p in &paths {
+                if afs::metadata(&p).await.is_ok() {
+                    info!(
+                        "use a existing path {} for extracting hook: {}",
+                        p.display(),
+                        cmd
+                    );
+
+                    if afs::metadata(&to).await.is_err() {
+                        debug!("moving {} to {}", p.display(), to.display());
+                        tokio::fs::rename(p, &to).await?;
+                    }
+                    return Ok(());
+                }
             }
-            tokio::fs::rename(extracted_dir, &to).await?;
-        } else {
-            // general extracting
-            let (from, to) = (cache_path.clone(), to.clone());
-            tokio::task::spawn_blocking(move || extract(from, to, content_type.as_deref()))
-                .await??;
+
+            info!("extracting with hook: {}", cmd);
+            run_cmd(cmd, &word_dir).await?;
+
+            for p in &paths {
+                if afs::metadata(&p).await.is_ok() {
+                    debug!("moving {} to {}", p.display(), to.display());
+                    tokio::fs::rename(p, &to).await?;
+                    return Ok(());
+                }
+            }
+
+            bail!(
+                "no decompression paths {:?} found after executing hook",
+                paths
+            );
         }
+        // general extracting
+        let (from, to) = (word_dir.to_owned(), to.to_owned());
+        tokio::task::spawn_blocking(move || extract(from, to, content_type.as_deref())).await??;
 
-        self.link_to_exe_dir(to).await?;
-        // hook
-        todo!()
-    }
-
-    async fn link_to_exe_dir(&self, base: impl AsRef<Path>) -> Result<()> {
-        let base = base.as_ref();
-        let glob_pat = self
-            .bin
-            .exe_glob()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| format!("**/*{}*", self.bin.name()));
-
-        let src = {
-            let base = base.to_path_buf();
-            tokio::task::spawn_blocking(move || find_one_exe_with_glob(&glob_pat, base)).await??
-        };
-        let dst = self.dst_link_path()?;
-
-        info!("sym linking {} to {}", src.display(), dst.display());
-        tokio::fs::symlink(src, dst).await?;
         Ok(())
     }
 
+    /// 下载url对应文件到缓存path
     async fn download(&self, url: &Url) -> Result<(PathBuf, Option<String>)> {
         let filename = url
             .path_segments()
@@ -129,7 +253,7 @@ impl<T: Api, B: Binary> BinaryManager<T, B> {
             .content_length()
             .ok_or_else(|| anyhow!("not found content len for {}", url))?;
 
-        let cache_path = self.project_dirs.cache_dir().join(filename);
+        let cache_path = self.cache_dir.join(filename);
         if let Ok(data) = tokio::fs::metadata(&cache_path).await {
             if data.len() == content_len {
                 info!(
@@ -159,42 +283,7 @@ impl<T: Api, B: Binary> BinaryManager<T, B> {
         Ok((cache_path, content_type))
     }
 
-    fn dst_link_path(&self) -> Result<PathBuf> {
-        let dst = self
-            .config
-            .executable_dir()
-            .as_ref()
-            .cloned()
-            .or_else(|| self.base_dirs.executable_dir().map(|v| v.to_owned()))
-            .ok_or_else(|| anyhow!("not found executable dir"))?
-            .join(self.bin.name());
-        Ok(dst)
+    async fn is_installed(&self) -> Result<bool> {
+        todo!()
     }
 }
-
-// #[async_trait]
-// trait BinaryManager {
-//     type API: Api;
-
-//     fn api(&self) -> &Self::API;
-
-//     fn mapper(&self) -> &Mapper;
-
-//     fn binary_name(&self) -> &str;
-
-//     fn client(&self) -> &Client;
-
-//     fn config(&self) -> &Config;
-
-//     async fn updated_infos(&self) -> Result<&[UpdatedInfo]>;
-
-//     async fn last_updated_ver(&self) -> Result<Option<String>>;
-
-//     async fn current_ver(&self) -> Result<Option<String>> {
-//         self.last_updated_ver().await
-//     }
-
-//     async fn update(&self) -> Result<()>;
-
-//     async fn uninstall(&self) -> Result<()>;
-// }

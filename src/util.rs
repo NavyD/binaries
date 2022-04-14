@@ -91,7 +91,13 @@ where
     todo!()
 }
 
-pub fn find_one_exe_with_glob(glob_pat: &str, base: impl AsRef<Path>) -> Result<PathBuf> {
+/// 尝试从base中找到一个符合glob_pat的可执行的bin文件path
+///
+/// # Error
+///
+/// * 如果未匹配任何path
+/// * 如果匹配到多个可执行的path
+pub fn find_one_exe_with_glob(base: impl AsRef<Path>, glob_pat: &str) -> Result<PathBuf> {
     let base = base.as_ref();
 
     let glob = Glob::new(glob_pat)?.compile_matcher();
@@ -117,7 +123,7 @@ pub fn find_one_exe_with_glob(glob_pat: &str, base: impl AsRef<Path>) -> Result<
             .collect::<Vec<_>>();
         if paths.len() != 1 {
             bail!(
-                "failed to get exe file with glob {} in {}: {:?}",
+                "failed to get exe file with glob {} in {}. executable paths: {:?}",
                 glob_pat,
                 base.display(),
                 paths
@@ -133,13 +139,13 @@ pub fn find_one_exe_with_glob(glob_pat: &str, base: impl AsRef<Path>) -> Result<
     Ok(path)
 }
 
-pub async fn run_cmd(cmd: &str, workdir: impl AsRef<Path>) -> Result<()> {
+pub async fn run_cmd(cmd: &str, work_dir: impl AsRef<Path>) -> Result<()> {
     let args = shell_words::split(cmd)?;
     if args.is_empty() {
         bail!("empty args: {}", cmd);
     }
     let mut child = Command::new(&args[0])
-        .current_dir(workdir)
+        .current_dir(work_dir)
         .args(&args[1..])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -155,4 +161,14 @@ pub async fn run_cmd(cmd: &str, workdir: impl AsRef<Path>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_one_exe_with_glob() -> Result<()> {
+        Ok(())
+    }
 }

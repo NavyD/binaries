@@ -30,7 +30,7 @@ trait Api: Sync {
 
     async fn installed_url(&self) -> Result<&Url>;
 
-    async fn updatable_url(&self) -> Result<&Url>;
+    async fn updateable_url(&self) -> Result<&Url>;
 }
 
 

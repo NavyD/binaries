@@ -16,6 +16,19 @@ pub struct UpdatedInfo {
     create_time: DateTime<Local>,
 }
 
+impl UpdatedInfo {
+    pub fn with_installed(name: &str, ver: &str) -> Self {
+        let now = Local::now();
+        Self {
+            id: 0,
+            name: name.to_owned(),
+            version: ver.to_owned(),
+            updated_time: now,
+            create_time: now,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Mapper {
     pool: SqlitePool,
