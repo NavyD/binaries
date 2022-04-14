@@ -63,26 +63,28 @@ impl<T: Api, B: Binary> BinaryManager<T, B> {
 
         let (cache_path, content_type) = self.download(url).await?;
         let to = self.project_dirs.data_dir().join(self.bin.name());
+
+        // try use custom to extract
+        if let Some(x_cmd) = self
+            .bin
+            .hook()
+            .as_ref()
+            .and_then(|h| h.action().extract().as_deref())
         {
-            let (from, to) = (cache_path.clone(), to.clone());
-            if let Some(x_cmd) = self
-                .bin
-                .hook()
-                .as_ref()
-                .and_then(|h| h.action().extract().as_deref())
-            {
-                run_cmd(x_cmd, cache_path).await?;
-                // 解压到同名文件夹中 在移动到to中
-                // let a = url
-                //     .path_segments()
-                //     .and_then(|seg| seg.last())
-                //     .ok_or_else(|| anyhow!("not found filename for {}", url))?
-                //     .parse::<PathBuf>()?.
-                
-            } else {
-                tokio::task::spawn_blocking(move || extract(from, to, content_type.as_deref()))
-                    .await??;
+            run_cmd(x_cmd, &cache_path).await?;
+            let extracted_dir = cache_path
+                .file_stem()
+                .map(|name| cache_path.join(name))
+                .unwrap_or_else(|| cache_path.with_file_name(self.bin.name()));
+            if !extracted_dir.is_dir() {
+                bail!("not found extracted target dir in {}", cache_path.display());
             }
+            tokio::fs::rename(extracted_dir, &to).await?;
+        } else {
+            // general extracting
+            let (from, to) = (cache_path.clone(), to.clone());
+            tokio::task::spawn_blocking(move || extract(from, to, content_type.as_deref()))
+                .await??;
         }
 
         self.link_to_exe_dir(to).await?;
