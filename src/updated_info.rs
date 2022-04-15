@@ -2,8 +2,8 @@ use anyhow::Result;
 use chrono::{DateTime, Local};
 use futures_util::TryStreamExt;
 use getset::{Getters, Setters};
-use once_cell::sync::Lazy;
-use sqlx::{sqlite::SqlitePoolOptions, Connection, SqliteConnection, SqlitePool};
+
+use sqlx::SqlitePool;
 // static RB: Lazy<Rbatis> = Lazy::new(Rbatis::new);
 
 #[derive(sqlx::FromRow, Debug, Clone, PartialEq, Eq, Getters, Setters)]
@@ -68,7 +68,8 @@ impl Mapper {
 mod tests {
     use anyhow::Error;
     use chrono::{NaiveDateTime, TimeZone, Utc};
-    use sqlx::Executor;
+    use once_cell::sync::Lazy;
+    use sqlx::{sqlite::SqlitePoolOptions, Executor};
     use std::{
         fs::{create_dir_all, File},
         path::{Path, PathBuf},

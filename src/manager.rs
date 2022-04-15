@@ -1,55 +1,29 @@
-use std::cmp::Ordering;
-use std::{os::unix::prelude::PermissionsExt, path::Path, str::FromStr};
+use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Result};
-use async_trait::async_trait;
-use chrono::{DateTime, Local};
-use directories::{BaseDirs, ProjectDirs};
-use futures_util::{stream, FutureExt, Stream, StreamExt};
+use futures_util::StreamExt;
 use getset::Getters;
-use globset::Glob;
 use log::{debug, info, trace, warn};
-use mime::Mime;
-use mime_guess::MimeGuess;
-use reqwest::{Client, Request};
-use std::env::consts::ARCH;
-use tokio::fs as afs;
-use tokio::{fs::File, io::AsyncWriteExt, sync::Mutex};
+use reqwest::Client;
+use tokio::{
+    fs::{self as afs, File},
+    io::AsyncWriteExt,
+};
 use url::Url;
-use walkdir::WalkDir;
 
+use crate::binary::Binary;
+use crate::binary::Version;
 use crate::{
-    config::{Config, Hook},
-    github::{self, Asset},
+    binary::Api,
     updated_info::{Mapper, UpdatedInfo},
     util::{extract, find_one_exe_with_glob, run_cmd},
-    Api,
 };
-
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-};
-
-trait Binary {
-    fn name(&self) -> &str;
-
-    fn version(&self) -> Version;
-
-    fn exe_glob(&self) -> Option<&str>;
-
-    fn hook(&self) -> Option<Hook>;
-}
-
-enum Version {
-    Latest,
-    Some(String),
-}
 
 #[derive(Debug, Getters)]
 #[getset(get = "pub")]
 struct BinaryManager<'a, T: Api, B: Binary> {
-    api: T,
+    api: &'a T,
     bin: B,
     mapper: &'a Mapper,
     client: Client,

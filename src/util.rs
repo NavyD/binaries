@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::{collections::HashSet, env::consts::ARCH, path::Path};
 
-use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Result;
 use globset::Glob;
@@ -144,7 +143,7 @@ pub async fn run_cmd(cmd: &str, work_dir: impl AsRef<Path>) -> Result<()> {
     if args.is_empty() {
         bail!("empty args: {}", cmd);
     }
-    let mut child = Command::new(&args[0])
+    let child = Command::new(&args[0])
         .current_dir(work_dir)
         .args(&args[1..])
         .stdout(Stdio::piped())

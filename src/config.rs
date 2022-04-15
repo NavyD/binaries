@@ -5,14 +5,14 @@ use std::{
 
 use getset::{Getters, Setters};
 
-use crate::github;
+use crate::binary::github;
 
 #[derive(Debug, Getters, Setters)]
 #[getset(get = "pub")]
 pub struct Config {
     archs: Option<HashMap<String, HashSet<String>>>,
     executable_dir: Option<PathBuf>,
-    github_bins: Vec<github::Binary>,
+    github_bins: Vec<github::GithubBinary>,
 }
 
 struct GithubBinConfig {
