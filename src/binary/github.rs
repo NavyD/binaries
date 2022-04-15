@@ -45,6 +45,13 @@ struct GithubApi {
     repo: String,
     client: Client,
     base_url: Url,
+
+    /// [Rate limiting](https://docs.github.com/en/rest/overview/resources-in-the-rest-api#rate-limiting)
+    token: Option<String>,
+}
+
+fn new_api(owner: &str, repo: &str) -> Result<GithubApi> {
+    todo!()
 }
 
 impl GithubApi {
@@ -57,6 +64,7 @@ impl GithubApi {
             repo: repo.to_owned(),
             client,
             base_url: url,
+            token: None,
         }
     }
 
@@ -73,7 +81,7 @@ impl GithubApi {
 
     async fn fetch_all_releases(&self) -> Result<Vec<Release>> {
         let url = self.base_url().join("releases")?;
-        let (mut page, per_page) = (1, 3);
+        let (mut page, per_page) = (1, 30);
         let mut releases = vec![];
 
         loop {
@@ -87,7 +95,6 @@ impl GithubApi {
                 .await?;
             let len = res.len();
             releases.extend(res);
-
             if len < per_page {
                 return Ok(releases);
             }
@@ -111,62 +118,74 @@ impl Api for GithubApi {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum ResponseResult {
+    Ok(Box<Release>),
+    Err {
+        message: String,
+        documentation_url: String,
+    },
+}
+
+// "{"message":"API rate limit exceeded for 1.65.204.86. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}
+// "
 #[derive(Serialize, Deserialize, Debug, Clone, Getters)]
 #[getset(get = "pub")]
 pub struct Release {
     #[serde(rename = "url")]
-    url: String,
+    url: Option<String>,
 
     #[serde(rename = "assets_url")]
-    assets_url: String,
+    assets_url: Option<String>,
 
     #[serde(rename = "upload_url")]
-    upload_url: String,
+    upload_url: Option<String>,
 
     #[serde(rename = "html_url")]
-    html_url: String,
+    html_url: Option<String>,
 
     #[serde(rename = "id")]
-    id: i64,
+    id: Option<i64>,
 
     #[serde(rename = "author")]
-    author: Author,
+    author: Option<Author>,
 
     #[serde(rename = "node_id")]
-    node_id: String,
+    node_id: Option<String>,
 
     #[serde(rename = "tag_name")]
-    tag_name: String,
+    tag_name: Option<String>,
 
     #[serde(rename = "target_commitish")]
-    target_commitish: String,
+    target_commitish: Option<String>,
 
     #[serde(rename = "name")]
-    name: String,
+    name: Option<String>,
 
     #[serde(rename = "draft")]
-    draft: bool,
+    draft: Option<bool>,
 
     #[serde(rename = "prerelease")]
-    prerelease: bool,
+    prerelease: Option<bool>,
 
     #[serde(rename = "created_at")]
-    created_at: DateTime<Utc>,
+    created_at: Option<DateTime<Utc>>,
 
     #[serde(rename = "published_at")]
-    published_at: DateTime<Utc>,
+    published_at: Option<DateTime<Utc>>,
 
     #[serde(rename = "assets")]
-    assets: Vec<Asset>,
+    assets: Option<Vec<Asset>>,
 
     #[serde(rename = "tarball_url")]
-    tarball_url: String,
+    tarball_url: Option<String>,
 
     #[serde(rename = "zipball_url")]
-    zipball_url: String,
+    zipball_url: Option<String>,
 
     #[serde(rename = "body")]
-    body: String,
+    body: Option<String>,
 
     #[serde(rename = "reactions")]
     reactions: Option<Reactions>,
@@ -179,138 +198,139 @@ pub struct Release {
 #[getset(get = "pub")]
 pub struct Asset {
     #[serde(rename = "url")]
-    url: String,
+    url: Option<String>,
 
     #[serde(rename = "id")]
-    id: i64,
+    id: Option<i64>,
 
     #[serde(rename = "node_id")]
-    node_id: String,
+    node_id: Option<String>,
 
     #[serde(rename = "name")]
-    name: String,
+    name: Option<String>,
 
     #[serde(rename = "label")]
     label: Option<String>,
 
     #[serde(rename = "uploader")]
-    uploader: Author,
+    uploader: Option<Author>,
 
-    // #[serde(
-    //     rename = "content_type",
-    //     deserialize_with = "hyper_serde::deserialize",
-    //     serialize_with = "hyper_serde::serialize"
-    // )]
-    // content_type: Mime,
+    #[serde(
+        rename = "content_type",
+        deserialize_with = "hyper_serde::deserialize",
+        serialize_with = "hyper_serde::serialize"
+    )]
+    content_type: Mime,
+
     #[serde(rename = "state")]
-    state: String,
+    state: Option<String>,
 
     #[serde(rename = "size")]
-    size: i64,
+    size: Option<i64>,
 
     #[serde(rename = "download_count")]
-    download_count: i64,
+    download_count: Option<i64>,
 
     #[serde(rename = "created_at")]
-    created_at: String,
+    created_at: Option<String>,
 
     #[serde(rename = "updated_at")]
-    updated_at: String,
+    updated_at: Option<String>,
 
     #[serde(rename = "browser_download_url")]
-    browser_download_url: String,
+    browser_download_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Getters)]
 #[getset(get = "pub")]
 pub struct Author {
     #[serde(rename = "login")]
-    login: String,
+    login: Option<String>,
 
     #[serde(rename = "id")]
-    id: i64,
+    id: Option<i64>,
 
     #[serde(rename = "node_id")]
-    node_id: String,
+    node_id: Option<String>,
 
     #[serde(rename = "avatar_url")]
-    avatar_url: String,
+    avatar_url: Option<String>,
 
     #[serde(rename = "gravatar_id")]
-    gravatar_id: String,
+    gravatar_id: Option<String>,
 
     #[serde(rename = "url")]
-    url: String,
+    url: Option<String>,
 
     #[serde(rename = "html_url")]
-    html_url: String,
+    html_url: Option<String>,
 
     #[serde(rename = "followers_url")]
-    followers_url: String,
+    followers_url: Option<String>,
 
     #[serde(rename = "following_url")]
-    following_url: String,
+    following_url: Option<String>,
 
     #[serde(rename = "gists_url")]
-    gists_url: String,
+    gists_url: Option<String>,
 
     #[serde(rename = "starred_url")]
-    starred_url: String,
+    starred_url: Option<String>,
 
     #[serde(rename = "subscriptions_url")]
-    subscriptions_url: String,
+    subscriptions_url: Option<String>,
 
     #[serde(rename = "organizations_url")]
-    organizations_url: String,
+    organizations_url: Option<String>,
 
     #[serde(rename = "repos_url")]
-    repos_url: String,
+    repos_url: Option<String>,
 
     #[serde(rename = "events_url")]
-    events_url: String,
+    events_url: Option<String>,
 
     #[serde(rename = "received_events_url")]
-    received_events_url: String,
+    received_events_url: Option<String>,
 
     #[serde(rename = "type")]
-    author_type: String,
+    author_type: Option<String>,
 
     #[serde(rename = "site_admin")]
-    site_admin: bool,
+    site_admin: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Getters)]
 #[getset(get = "pub")]
 pub struct Reactions {
     #[serde(rename = "url")]
-    url: String,
+    url: Option<String>,
 
     #[serde(rename = "total_count")]
-    total_count: i64,
+    total_count: Option<i64>,
 
     #[serde(rename = "+1")]
-    the_1: i64,
+    the_1: Option<i64>,
 
     #[serde(rename = "-1")]
-    reactions_1: i64,
+    reactions_1: Option<i64>,
 
     #[serde(rename = "laugh")]
-    laugh: i64,
+    laugh: Option<i64>,
 
     #[serde(rename = "hooray")]
-    hooray: i64,
+    hooray: Option<i64>,
 
     #[serde(rename = "confused")]
-    confused: i64,
+    confused: Option<i64>,
 
     #[serde(rename = "heart")]
-    heart: i64,
+    heart: Option<i64>,
 
     #[serde(rename = "rocket")]
-    rocket: i64,
+    rocket: Option<i64>,
 
     #[serde(rename = "eyes")]
-    eyes: i64,
+    eyes: Option<i64>,
 }
 
 use getset::{Getters, Setters};
@@ -367,11 +387,13 @@ mod tests {
         let release = api.fetch_latest_release().await?;
 
         let create_at = "2022-03-19T05:58:51Z".parse::<DateTime<Utc>>()?;
-        assert!(release
-            .url()
-            .contains(&format!("{}/{}", api.owner(), api.repo())));
-        assert!(!release.prerelease);
-        assert!(create_at <= release.created_at);
+        assert!(release.url().as_deref().unwrap().contains(&format!(
+            "{}/{}",
+            api.owner(),
+            api.repo()
+        )));
+        assert!(!release.prerelease.unwrap());
+        assert!(create_at <= release.created_at.unwrap());
         Ok(())
     }
 

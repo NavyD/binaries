@@ -17,6 +17,8 @@ pub trait Api: Sync {
 }
 
 pub trait Binary {
+    type API: Api;
+
     fn name(&self) -> &str;
 
     fn version(&self) -> Version;
@@ -24,6 +26,8 @@ pub trait Binary {
     fn exe_glob(&self) -> Option<&str>;
 
     fn hook(&self) -> Option<Hook>;
+
+    fn api(&self) -> &Self::API;
 }
 
 pub enum Version {

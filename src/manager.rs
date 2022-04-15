@@ -22,8 +22,7 @@ use crate::{
 
 #[derive(Debug, Getters)]
 #[getset(get = "pub")]
-struct BinaryManager<'a, T: Api, B: Binary> {
-    api: &'a T,
+struct BinaryManager<'a, B: Binary> {
     bin: B,
     mapper: &'a Mapper,
     client: Client,
@@ -32,7 +31,7 @@ struct BinaryManager<'a, T: Api, B: Binary> {
     executable_dir: &'a Path,
 }
 
-impl<'a, T: Api, B: Binary> BinaryManager<'a, T, B> {
+impl<'a, B: Binary> BinaryManager<'a, B> {
     pub async fn updateable_ver(&self) -> Result<Option<(String, String)>> {
         if !self.is_installed().await? {
             return Ok(None);
@@ -44,7 +43,7 @@ impl<'a, T: Api, B: Binary> BinaryManager<'a, T, B> {
         let mut infos = self.mapper.select_list_by_name(self.bin.name()).await?;
         infos.sort_by(|a, b| b.create_time().cmp(a.create_time()));
         if let Some(info) = infos.first() {
-            let latest_ver = self.api.latest_ver().await?;
+            let latest_ver = self.bin.api().latest_ver().await?;
             if latest_ver > info.version().as_str() {
                 return Ok(Some((latest_ver.to_owned(), info.version().to_owned())));
             }
@@ -81,10 +80,10 @@ impl<'a, T: Api, B: Binary> BinaryManager<'a, T, B> {
     pub async fn install(&self) -> Result<()> {
         // download
         let ver = match self.bin.version() {
-            Version::Latest => self.api.latest_ver().await?.to_owned(),
+            Version::Latest => self.bin.api().latest_ver().await?.to_owned(),
             Version::Some(ver) => ver,
         };
-        let url = self.api().installed_url().await?;
+        let url = self.bin.api().installed_url().await?;
         info!(
             "installing {} version {} for url: {}",
             self.bin.name(),
