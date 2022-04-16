@@ -15,7 +15,6 @@ use url::Url;
 use crate::binary::Binary;
 use crate::binary::Version;
 use crate::{
-    binary::Api,
     updated_info::{Mapper, UpdatedInfo},
     util::{extract, find_one_exe_with_glob, run_cmd},
 };
@@ -43,7 +42,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
         let mut infos = self.mapper.select_list_by_name(self.bin.name()).await?;
         infos.sort_by(|a, b| b.create_time().cmp(a.create_time()));
         if let Some(info) = infos.first() {
-            let latest_ver = self.bin.api().latest_ver().await?;
+            let latest_ver = self.bin.latest_ver().await?;
             if latest_ver > info.version().as_str() {
                 return Ok(Some((latest_ver.to_owned(), info.version().to_owned())));
             }
@@ -80,10 +79,10 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
     pub async fn install(&self) -> Result<()> {
         // download
         let ver = match self.bin.version() {
-            Version::Latest => self.bin.api().latest_ver().await?.to_owned(),
+            Version::Latest => self.bin.latest_ver().await?.to_owned(),
             Version::Some(ver) => ver,
         };
-        let url = self.bin.api().installed_url().await?;
+        let url = self.bin.get_url(Some(&ver)).await?;
         info!(
             "installing {} version {} for url: {}",
             self.bin.name(),
@@ -91,7 +90,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
             url
         );
 
-        let (download_path, content_type) = self.download(url).await?;
+        let (download_path, content_type) = self.download(&url).await?;
         let to = self.bin_data_dir();
         afs::create_dir_all(&to).await?;
 

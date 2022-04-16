@@ -8,17 +8,17 @@ use url::Url;
 pub mod github;
 
 #[async_trait]
-pub trait Api: Sync {
-    async fn latest_ver(&self) -> Result<&str>;
+pub trait Visible {
+    async fn latest_ver(&self) -> Result<String>;
 
-    async fn installed_url(&self) -> Result<&Url>;
+    async fn get_url(&self, ver: Option<&str>) -> Result<Url>;
 
-    async fn updateable_url(&self) -> Result<&Url>;
+    async fn get_latest_url(&self) -> Result<Url> {
+        self.get_url(None).await
+    }
 }
 
-pub trait Binary {
-    type API: Api;
-
+pub trait Binary: Visible {
     fn name(&self) -> &str;
 
     fn version(&self) -> Version;
@@ -26,8 +26,6 @@ pub trait Binary {
     fn exe_glob(&self) -> Option<&str>;
 
     fn hook(&self) -> Option<Hook>;
-
-    fn api(&self) -> &Self::API;
 }
 
 pub enum Version {
@@ -35,14 +33,14 @@ pub enum Version {
     Some(String),
 }
 
-#[derive(Debug, Getters, Setters)]
+#[derive(Debug, Getters, Setters, Clone)]
 #[getset(get = "pub")]
 pub struct Hook {
     work_dir: Option<PathBuf>,
     action: HookAction,
 }
 
-#[derive(Debug, Getters, Setters)]
+#[derive(Debug, Getters, Setters, Clone)]
 #[getset(get = "pub")]
 pub struct HookAction {
     install: Option<String>,

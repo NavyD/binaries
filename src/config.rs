@@ -12,7 +12,7 @@ use crate::binary::github;
 pub struct Config {
     archs: Option<HashMap<String, HashSet<String>>>,
     executable_dir: Option<PathBuf>,
-    github_bins: Vec<github::GithubBinary>,
+    github_bins: Vec<github::BinaryConfig>,
 }
 
 struct GithubBinConfig {
