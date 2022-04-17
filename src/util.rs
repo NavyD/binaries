@@ -9,6 +9,7 @@ use globset::Glob;
 use log::info;
 use log::trace;
 use mime::Mime;
+use once_cell::sync::Lazy;
 use tokio::process::Command;
 use walkdir::WalkDir;
 
@@ -37,7 +38,7 @@ use walkdir::WalkDir;
 /// armv5l  "(arm5|armv5)"
 /// armv5l-2 "arm"
 /// ```
-pub fn get_archs() -> HashSet<String> {
+pub fn get_archs() -> Vec<String> {
     match ARCH {
         "x86" => vec!["386", "686", "linux32"],
         "x86_64" => vec!["x86_64", "amd64", "intel", "linux64"],
@@ -47,7 +48,7 @@ pub fn get_archs() -> HashSet<String> {
     .into_iter()
     .chain([ARCH])
     .map(|s| s.trim().to_string())
-    .collect::<HashSet<_>>()
+    .collect::<_>()
 }
 
 pub fn extract<P>(from: P, to: P, content_type: Option<&str>) -> Result<()>
@@ -161,6 +162,13 @@ pub async fn run_cmd(cmd: &str, work_dir: impl AsRef<Path>) -> Result<()> {
     }
     Ok(())
 }
+
+pub static SUPPORTED_CONTENT_TYPES: Lazy<[Mime; 2]> = Lazy::new(|| {
+    [
+        "application/zip".parse::<Mime>().expect("mime zip"),
+        "application/gzip".parse::<Mime>().expect("mime gzip"),
+    ]
+});
 
 #[cfg(test)]
 mod tests {

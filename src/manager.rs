@@ -43,8 +43,8 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
         infos.sort_by(|a, b| b.create_time().cmp(a.create_time()));
         if let Some(info) = infos.first() {
             let latest_ver = self.bin.latest_ver().await?;
-            if latest_ver > info.version().as_str() {
-                return Ok(Some((latest_ver.to_owned(), info.version().to_owned())));
+            if latest_ver > *info.version() {
+                return Ok(Some((latest_ver, info.version().to_string())));
             }
         }
         Ok(None)

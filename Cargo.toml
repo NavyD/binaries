@@ -55,4 +55,6 @@ tar = "0.4.38"
 which = "4.2.5"
 hyper_serde = "0.13.0"
 derive_builder = "0.11.1"
-typed-builder = "0.10.0"
+
+[dev-dependencies]
+dotenv = "0.15.0"

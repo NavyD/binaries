@@ -11,7 +11,7 @@ pub static CRATE_NAME: &str = env!("CARGO_CRATE_NAME");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use log::LevelFilter;
+    use log::{info, warn, LevelFilter};
     use std::sync::Once;
 
     static INIT: Once = Once::new();
@@ -24,6 +24,10 @@ mod tests {
                 .filter_level(LevelFilter::Info)
                 .filter_module(CRATE_NAME, LevelFilter::Trace)
                 .init();
+            match dotenv::dotenv() {
+                Ok(p) => info!("loaded .env from {}", p.display()),
+                Err(e) => warn!("not found .env"),
+            }
         });
     }
 }

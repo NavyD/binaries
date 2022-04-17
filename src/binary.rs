@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use async_trait::async_trait;
 use getset::{Getters, Setters};
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 pub mod github;
@@ -25,7 +26,7 @@ pub trait Binary: Visible {
 
     fn exe_glob(&self) -> Option<&str>;
 
-    fn hook(&self) -> Option<Hook>;
+    fn hook(&self) -> Option<&Hook>;
 }
 
 pub enum Version {
@@ -33,14 +34,14 @@ pub enum Version {
     Some(String),
 }
 
-#[derive(Debug, Getters, Setters, Clone)]
+#[derive(Debug, Getters, Setters, Clone, Serialize, Deserialize)]
 #[getset(get = "pub")]
 pub struct Hook {
     work_dir: Option<PathBuf>,
     action: HookAction,
 }
 
-#[derive(Debug, Getters, Setters, Clone)]
+#[derive(Debug, Getters, Setters, Clone, Serialize, Deserialize)]
 #[getset(get = "pub")]
 pub struct HookAction {
     install: Option<String>,
