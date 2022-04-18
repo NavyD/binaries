@@ -12,10 +12,10 @@ pub mod github;
 pub trait Visible {
     async fn latest_ver(&self) -> Result<String>;
 
-    async fn get_url(&self, ver: Option<&str>) -> Result<Url>;
+    async fn get_url(&self, ver: &str) -> Result<Url>;
 
     async fn get_latest_url(&self) -> Result<Url> {
-        self.get_url(None).await
+        self.get_url(&self.latest_ver().await?).await
     }
 }
 

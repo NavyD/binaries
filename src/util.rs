@@ -170,6 +170,14 @@ pub static SUPPORTED_CONTENT_TYPES: Lazy<[Mime; 2]> = Lazy::new(|| {
     ]
 });
 
+fn ex_zip<P: AsRef<Path>>(from: P, to: P) -> Result<()> {
+    todo!()
+}
+
+fn ex_gzip<P: AsRef<Path>>(from: P, to: P) -> Result<()> {
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,7 +17,7 @@ use url::Url;
 
 use super::{Binary, Version, Visible};
 use crate::{
-    binary::Hook,
+    source::Hook,
     util::{get_archs, SUPPORTED_CONTENT_TYPES},
 };
 
@@ -40,13 +40,8 @@ impl Visible for GithubBinary {
             .map(|rel| rel.version().to_owned())
     }
 
-    async fn get_url(&self, ver: Option<&str>) -> Result<Url> {
-        let ver = if let Some(ver) = ver {
-            ver.to_owned()
-        } else {
-            self.latest_ver().await?
-        };
-        let release = self.fetch_release_by_tag_name(&ver).await?;
+    async fn get_url(&self, ver: &str) -> Result<Url> {
+        let release = self.fetch_release_by_tag_name(ver).await?;
         self.pick_asset(&release)?
             .browser_download_url
             .parse()

@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-pub mod binary;
+pub mod source;
 pub mod config;
 pub mod manager;
 pub mod updated_info;

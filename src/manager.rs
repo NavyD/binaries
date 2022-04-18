@@ -12,8 +12,8 @@ use tokio::{
 };
 use url::Url;
 
-use crate::binary::Binary;
-use crate::binary::Version;
+use crate::source::Binary;
+use crate::source::Version;
 use crate::{
     updated_info::{Mapper, UpdatedInfo},
     util::{extract, find_one_exe_with_glob, run_cmd},
@@ -82,7 +82,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
             Version::Latest => self.bin.latest_ver().await?.to_owned(),
             Version::Some(ver) => ver,
         };
-        let url = self.bin.get_url(Some(&ver)).await?;
+        let url = self.bin.get_url(&ver).await?;
         info!(
             "installing {} version {} for url: {}",
             self.bin.name(),

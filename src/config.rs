@@ -5,7 +5,7 @@ use std::{
 
 use getset::{Getters, Setters};
 
-use crate::binary::github;
+use crate::source::github;
 
 #[derive(Debug, Getters, Setters)]
 #[getset(get = "pub")]
