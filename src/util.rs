@@ -1,3 +1,5 @@
+use std::fs::{self, create_dir_all, File, Permissions};
+use std::io::{self, Read, Seek};
 use std::os::unix::prelude::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -5,13 +7,16 @@ use std::{collections::HashSet, env::consts::ARCH, path::Path};
 
 use anyhow::bail;
 use anyhow::Result;
+use flate2::read::GzDecoder;
 use globset::Glob;
-use log::info;
 use log::trace;
+use log::{debug, info};
 use mime::Mime;
 use once_cell::sync::Lazy;
+use tar::Archive;
 use tokio::process::Command;
 use walkdir::WalkDir;
+use zip::ZipArchive;
 
 /// get strings of [ARCH][std::env::consts::ARCH].
 ///
@@ -60,7 +65,8 @@ where
         return ex(from, to, &ty.parse()?).map_err(Into::into);
     }
 
-    for ty in mime_guess::from_path(from) {
+    let mimes = mime_guess::from_path(from);
+    for ty in &mimes {
         if let Err(e) = ex(from, to, &ty) {
             info!(
                 "failed to extract {} with mime {}: {}",
@@ -73,7 +79,11 @@ where
         }
     }
 
-    bail!("failed to extract {}: all mimes tried", from.display());
+    bail!(
+        "failed to extract {}: all mimes tried: {:?}",
+        from.display(),
+        mimes
+    );
 }
 
 pub fn ex<P>(from: P, to: P, content_type: &Mime) -> Result<()>
@@ -88,7 +98,14 @@ where
         to.display(),
         content_type
     );
-    todo!()
+
+    match content_type.as_ref() {
+        "application/zip" => ex_zip(File::open(from)?, to)?,
+        "application/gzip" => ex_gzip(File::open(from)?, to)?,
+        _ => bail!("unsupported compress type: {}", content_type),
+    }
+
+    Ok(())
 }
 
 /// 尝试从base中找到一个符合glob_pat的可执行的bin文件path
@@ -103,7 +120,7 @@ pub fn find_one_exe_with_glob(base: impl AsRef<Path>, glob_pat: &str) -> Result<
     let glob = Glob::new(glob_pat)?.compile_matcher();
     let paths = WalkDir::new(base)
         .into_iter()
-        .filter_entry(|entry| glob.is_match(entry.path()))
+        .filter(|entry| entry.as_ref().map_or(false, |e| glob.is_match(e.path())))
         .collect::<Result<Vec<_>, _>>()?;
 
     let path = if paths.is_empty() {
@@ -170,20 +187,104 @@ pub static SUPPORTED_CONTENT_TYPES: Lazy<[Mime; 2]> = Lazy::new(|| {
     ]
 });
 
-fn ex_zip<P: AsRef<Path>>(from: P, to: P) -> Result<()> {
-    todo!()
+fn ex_zip(from: impl Read + Seek, to: impl AsRef<Path>) -> Result<()> {
+    let mut archive = ZipArchive::new(from)?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let outpath = if let Some(path) = file.enclosed_name().map(|p| to.as_ref().join(p)) {
+            path
+        } else {
+            continue;
+        };
+
+        {
+            let comment = file.comment();
+            if !comment.is_empty() {
+                debug!("File {} comment: {}", i, comment);
+            }
+        }
+
+        if (*file.name()).ends_with('/') {
+            debug!("File {} extracted to \"{}\"", i, outpath.display());
+            create_dir_all(&outpath)?;
+        } else {
+            debug!(
+                "File {} extracted to \"{}\" ({} bytes)",
+                i,
+                outpath.display(),
+                file.size()
+            );
+            if let Some(p) = outpath.parent() {
+                if !p.exists() {
+                    create_dir_all(&p)?;
+                }
+            }
+            let mut outfile = File::create(&outpath)?;
+            io::copy(&mut file, &mut outfile)?;
+        }
+
+        // Get and Set permissions
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            if let Some(mode) = file.unix_mode() {
+                fs::set_permissions(&outpath, Permissions::from_mode(mode)).unwrap();
+            }
+        }
+    }
+
+    Ok(())
 }
 
-fn ex_gzip<P: AsRef<Path>>(from: P, to: P) -> Result<()> {
-    todo!()
+fn ex_gzip<P: AsRef<Path>, R: Read>(from: R, to: P) -> Result<()> {
+    let tar = GzDecoder::new(from);
+    let mut archive = Archive::new(tar);
+    archive.unpack(to)?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
     fn test_find_one_exe_with_glob() -> Result<()> {
+        let a = find_one_exe_with_glob("tests", "**/bin_exe")?;
+        assert_eq!(a.file_name().and_then(|a| a.to_str()), Some("bin_exe"));
         Ok(())
+    }
+
+    #[test]
+    fn test_gzip() -> Result<()> {
+        let zip_path = "tests/a.tar.gz".parse::<PathBuf>()?;
+        let root = tempdir()?;
+        assert!(!root.path().join("a").is_dir());
+        ex_gzip(File::open(zip_path)?, root.path())?;
+
+        assert!(root.path().join("a").is_dir());
+        assert!(root.path().join("a/a.txt").is_file());
+        assert!(root.path().join("a/b/a.txt").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn test_zip() -> Result<()> {
+        let zip_path = "tests/a.zip".parse::<PathBuf>()?;
+        let root = tempdir()?;
+        assert!(!root.path().join("a").is_dir());
+        ex_zip(File::open(zip_path)?, root.path())?;
+
+        assert!(root.path().join("a").is_dir());
+        assert!(root.path().join("a/a.txt").is_file());
+        assert!(root.path().join("a/b/a.txt").is_file());
+        Ok(())
+    }
+
+    fn create_zip() -> Result<PathBuf> {
+        todo!()
     }
 }
