@@ -1,16 +1,25 @@
+use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use anyhow::Error;
 use anyhow::{anyhow, bail, Result};
-use futures_util::StreamExt;
+use async_trait::async_trait;
+use futures_util::TryFutureExt;
+use futures_util::{FutureExt, StreamExt};
 use getset::Getters;
-use log::{debug, info, trace, warn};
+use log::{debug, error, info, trace, warn};
+use md5::{Digest, Md5};
 use reqwest::Client;
+use tokio::fs::read_to_string;
+use tokio::sync::Mutex;
 use tokio::{
-    fs::{self as afs, File},
+    fs::{self as afs},
     io::AsyncWriteExt,
 };
 use url::Url;
+use which::which;
 
 use crate::source::Binary;
 use crate::source::Version;
@@ -18,6 +27,45 @@ use crate::{
     updated_info::{Mapper, UpdatedInfo},
     util::{extract, find_one_exe_with_glob, run_cmd},
 };
+
+// #[async_trait]
+// pub trait Package: Sync {
+//     type Bin: Binary;
+
+//     fn bin(&self) -> &Self::Bin;
+
+//     async fn has_installed(&self) -> bool {
+//         let name = self.bin().name().to_owned();
+//         tokio::task::spawn_blocking(move || {
+//             which(&name).map_or(false, |p| {
+//                 trace!("found executable bin {} in {}", name, p.display());
+//                 true
+//             })
+//         })
+//         .await
+//         .unwrap_or_else(|e| {
+//             error!("failed spawn blocking `which` task: {}", e);
+//             false
+//         })
+//     }
+
+//     async fn updateable_ver(&self) -> Option<(String, String)>;
+
+//     async fn install(&self, ver: &str) -> Result<()>;
+
+//     async fn uninstall(&self) -> Result<()>;
+
+//     async fn update(&self) -> Result<()> {
+//         if let Some((new, old)) = self.updateable_ver().await {
+//             info!("updating version to {} from {}", new, old);
+//             self.uninstall().await?;
+//             self.install(&new).await?;
+//             Ok(())
+//         } else {
+//             bail!("can not update")
+//         }
+//     }
+// }
 
 #[derive(Debug, Getters)]
 #[getset(get = "pub")]
@@ -31,37 +79,47 @@ struct BinaryManager<'a, B: Binary> {
 }
 
 impl<'a, B: Binary> BinaryManager<'a, B> {
-    pub async fn updateable_ver(&self) -> Result<Option<(String, String)>> {
-        if !self.is_installed().await? {
-            return Ok(None);
-        }
+    pub async fn has_installed(&self) -> bool {
+        let name = self.bin().name().to_owned();
+        tokio::task::spawn_blocking(move || {
+            which(&name).map_or(false, |p| {
+                trace!("found executable bin {} in {}", name, p.display());
+                true
+            })
+        })
+        .await
+        .unwrap_or_else(|e| {
+            error!("failed spawn blocking `which` task: {}", e);
+            false
+        })
+    }
+
+    pub async fn updateable_ver(&self) -> Option<(String, String)> {
         if let Version::Some(_) = self.bin.version() {
-            return Ok(None);
+            return None;
         }
 
-        let mut infos = self.mapper.select_list_by_name(self.bin.name()).await?;
-        infos.sort_by(|a, b| b.create_time().cmp(a.create_time()));
-        if let Some(info) = infos.first() {
-            let latest_ver = self.bin.latest_ver().await?;
-            if latest_ver > *info.version() {
-                return Ok(Some((latest_ver, info.version().to_string())));
+        if !self.has_installed().await {
+            return None;
+        }
+
+        let bin = self.bin.clone();
+        let mapper = self.mapper.clone();
+        let f = || async move {
+            let mut infos = mapper.select_list_by_name(bin.name()).await?;
+            infos.sort_by(|a, b| b.create_time().cmp(a.create_time()));
+            if let Some(info) = infos.first() {
+                let latest_ver = bin.latest_ver().await?;
+                if latest_ver > *info.version() {
+                    return Ok::<_, Error>(Some((latest_ver, info.version().to_string())));
+                }
             }
-        }
-        Ok(None)
+            Ok(None)
+        };
+        f().await.unwrap_or(None)
     }
 
-    pub async fn update(&self) -> Result<()> {
-        if let Some((new, old)) = self.updateable_ver().await? {
-            info!("updating version {} from {}", new, old);
-            self.uninstall().await?;
-            self.install().await?;
-            Ok(())
-        } else {
-            bail!("can not update")
-        }
-    }
-
-    pub async fn uninstall(&self) -> Result<()> {
+    async fn uninstall(&self) -> Result<()> {
         let link = self.link_path();
         if let Err(e) = afs::remove_file(&link).await {
             debug!("failed to remove a link file {}: {}", link.display(), e);
@@ -76,20 +134,11 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
         Ok(())
     }
 
-    pub async fn install(&self) -> Result<()> {
-        // download
-        let ver = match self.bin.version() {
-            Version::Latest => self.bin.latest_ver().await?.to_owned(),
-            Version::Some(ver) => ver,
-        };
-        let url = self.bin.get_url(&ver).await?;
-        info!(
-            "installing {} version {} for url: {}",
-            self.bin.name(),
-            ver,
-            url
-        );
+    pub async fn install(&self, ver: &str) -> Result<()> {
+        let url = self.bin.get_url(ver).await?;
+        info!("installing {} version {} for {}", self.bin.name(), ver, url);
 
+        // download
         let (download_path, content_type) = self.download(&url).await?;
         let to = self.bin_data_dir();
         afs::create_dir_all(&to).await?;
@@ -214,6 +263,43 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
             .map(ToString::to_string)
             .ok_or_else(|| anyhow!("not found filename for {}", url))?;
 
+        let cache_path = self.cache_dir.join(&filename);
+        let md5_path = self.cache_dir.join(&format!("{}.md5", filename));
+        if afs::metadata(&cache_path).await.is_ok() {
+            if afs::metadata(&md5_path).await.is_ok() {
+                let (md5_digest, cache_path, md5_path) = (
+                    read_to_string(&md5_path).await?,
+                    cache_path.clone(),
+                    md5_path.clone(),
+                );
+                if tokio::task::spawn_blocking(move || {
+                    let mut hasher = Md5::new();
+                    std::io::copy(&mut File::open(&md5_path)?, &mut hasher);
+                    let digest: String = hasher
+                        .finalize()
+                        .iter()
+                        .fold(String::new(), |a, e| a + &e.to_string());
+                    trace!(
+                        "found new digest {} and old {} for {}",
+                        digest,
+                        md5_digest,
+                        md5_path.display()
+                    );
+                    Ok::<_, Error>(md5_digest == digest)
+                })
+                .await??
+                {
+                    info!("use cached file {}", cache_path.display());
+                    return Ok((cache_path, None));
+                } else {
+                    warn!("inconsistent md5 digest");
+                }
+            } else {
+                warn!("not found md5 digest in {}", md5_path.display());
+            }
+        }
+
+        debug!("downloading {} for {}", filename, url);
         let resp = self.client().get(url.as_ref()).send().await?;
 
         let content_type = resp
@@ -224,6 +310,10 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
         let content_len = resp
             .content_length()
             .ok_or_else(|| anyhow!("not found content len for {}", url))?;
+        debug!(
+            "response has content type: {:?}, content length: {} for {}",
+            content_type, content_len, url
+        );
 
         let cache_path = self.cache_dir.join(filename);
         if let Ok(data) = tokio::fs::metadata(&cache_path).await {
@@ -244,7 +334,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
             }
         }
 
-        let mut file = File::create(&cache_path).await?;
+        let mut file = afs::File::create(&cache_path).await?;
         let mut stream = resp.bytes_stream();
 
         trace!("downloading to {} for url: {}", cache_path.display(), url);
@@ -255,7 +345,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
         Ok((cache_path, content_type))
     }
 
-    async fn is_installed(&self) -> Result<bool> {
-        todo!()
-    }
+    // async fn has_installed(&self) -> Result<bool> {
+    //     todo!()
+    // }
 }

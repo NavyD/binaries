@@ -19,7 +19,7 @@ pub trait Visible {
     }
 }
 
-pub trait Binary: Visible {
+pub trait Binary: Visible + Clone {
     fn name(&self) -> &str;
 
     fn version(&self) -> Version;

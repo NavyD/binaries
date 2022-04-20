@@ -29,7 +29,7 @@ impl UpdatedInfo {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Mapper {
     pool: SqlitePool,
 }

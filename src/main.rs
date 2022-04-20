@@ -5,4 +5,22 @@ async fn main() {
         .filter_level(log::LevelFilter::Warn)
         .filter_module(env!("CARGO_CRATE_NAME"), log::LevelFilter::Trace)
         .init();
+
+    let b = B;
+    b.a();
+}
+
+trait A {
+    fn a(&self) {
+        println!("a");
+    }
+}
+
+struct B;
+
+impl A for B {
+    fn a(&self) {
+        A::a(self);
+        println!("b");
+    }
 }
