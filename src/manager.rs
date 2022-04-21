@@ -9,10 +9,12 @@ use async_trait::async_trait;
 use futures_util::TryFutureExt;
 use futures_util::{FutureExt, StreamExt};
 use getset::Getters;
+use log::log_enabled;
 use log::{debug, error, info, trace, warn};
 use md5::{Digest, Md5};
 use reqwest::Client;
 use tokio::fs::read_to_string;
+use tokio::fs::remove_file;
 use tokio::sync::Mutex;
 use tokio::{
     fs::{self as afs},
@@ -165,7 +167,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
         tokio::fs::symlink(src, dst).await?;
 
         // inserto into db
-        let info = UpdatedInfo::with_installed(self.bin.name(), &ver);
+        let info = UpdatedInfo::with_installed(self.bin.name(), ver);
         debug!("inserting info to db: {:?}", info);
         self.mapper.insert(&info).await?;
         Ok(())
@@ -196,9 +198,17 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
         P: AsRef<Path>,
     {
         let (from, to) = (from.as_ref().to_owned(), to.as_ref().to_owned());
+
         let word_dir = from
             .parent()
             .ok_or_else(|| anyhow!("not found parent dir for: {}", from.display()))?;
+
+        debug!(
+            "extracting to {} from {} in word dir: {}",
+            to.display(),
+            from.display(),
+            word_dir.display()
+        );
         // try use custom to extract
         if let Some(cmd) = self
             .bin
@@ -215,6 +225,9 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
                     word_dir.with_file_name(self.bin.name())
                 }))
                 .collect::<Vec<_>>();
+
+            trace!("extracting to {:?} with hook: {}", paths, cmd);
+
             // if any exists
             for p in &paths {
                 if afs::metadata(&p).await.is_ok() {
@@ -225,14 +238,14 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
                     );
 
                     if afs::metadata(&to).await.is_err() {
-                        debug!("moving {} to {}", p.display(), to.display());
+                        trace!("moving {} to {}", p.display(), to.display());
                         tokio::fs::rename(p, &to).await?;
                     }
                     return Ok(());
                 }
             }
 
-            info!("extracting with hook: {}", cmd);
+            debug!("running hook {} in {}", cmd, word_dir.display());
             run_cmd(cmd, &word_dir).await?;
 
             for p in &paths {
@@ -243,6 +256,10 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
                 }
             }
 
+            error!(
+                "not found decompression paths {:?} for executed hook: {}",
+                paths, cmd
+            );
             bail!(
                 "no decompression paths {:?} found after executing hook",
                 paths
@@ -256,6 +273,8 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
     }
 
     /// 下载url对应文件到缓存path
+    ///
+    /// 如果之前有下载过相同的文件且md5相同则使用缓存文件，否则重新下载
     async fn download(&self, url: &Url) -> Result<(PathBuf, Option<String>)> {
         let filename = url
             .path_segments()
@@ -265,37 +284,53 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
 
         let cache_path = self.cache_dir.join(&filename);
         let md5_path = self.cache_dir.join(&format!("{}.md5", filename));
+
+        // check digest
         if afs::metadata(&cache_path).await.is_ok() {
             if afs::metadata(&md5_path).await.is_ok() {
-                let (md5_digest, cache_path, md5_path) = (
-                    read_to_string(&md5_path).await?,
-                    cache_path.clone(),
-                    md5_path.clone(),
-                );
-                if tokio::task::spawn_blocking(move || {
-                    let mut hasher = Md5::new();
-                    std::io::copy(&mut File::open(&md5_path)?, &mut hasher);
-                    let digest: String = hasher
-                        .finalize()
-                        .iter()
-                        .fold(String::new(), |a, e| a + &e.to_string());
-                    trace!(
-                        "found new digest {} and old {} for {}",
-                        digest,
-                        md5_digest,
-                        md5_path.display()
+                let is_identical = {
+                    let (md5_digest, cache_path, md5_path) = (
+                        read_to_string(&md5_path).await?,
+                        cache_path.clone(),
+                        md5_path.clone(),
                     );
-                    Ok::<_, Error>(md5_digest == digest)
-                })
-                .await??
-                {
+                    tokio::task::spawn_blocking(move || {
+                        let mut hasher = Md5::new();
+                        std::io::copy(&mut File::open(&md5_path)?, &mut hasher);
+                        let digest: String = hasher
+                            .finalize()
+                            .iter()
+                            .fold(String::new(), |a, e| a + &e.to_string());
+                        trace!(
+                            "found new digest {} and old {} for {}",
+                            digest,
+                            md5_digest,
+                            md5_path.display()
+                        );
+                        Ok::<_, Error>(md5_digest == digest)
+                    })
+                    .await??
+                };
+
+                if is_identical {
                     info!("use cached file {}", cache_path.display());
                     return Ok((cache_path, None));
                 } else {
-                    warn!("inconsistent md5 digest");
+                    warn!(
+                        "inconsistent md5 digest. removing old cache {} and md5 {}",
+                        cache_path.display(),
+                        md5_path.display(),
+                    );
+                    remove_file(&cache_path).await?;
+                    remove_file(&md5_path).await?;
                 }
             } else {
-                warn!("not found md5 digest in {}", md5_path.display());
+                info!(
+                    "not found md5 digest in {}. removing old cache {}",
+                    md5_path.display(),
+                    cache_path.display()
+                );
+                remove_file(&cache_path).await?;
             }
         }
 
@@ -307,45 +342,39 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(ToString::to_string);
-        let content_len = resp
-            .content_length()
-            .ok_or_else(|| anyhow!("not found content len for {}", url))?;
-        debug!(
-            "response has content type: {:?}, content length: {} for {}",
-            content_type, content_len, url
-        );
 
-        let cache_path = self.cache_dir.join(filename);
-        if let Ok(data) = tokio::fs::metadata(&cache_path).await {
-            if data.len() == content_len {
-                info!(
-                    "found cached file {} with len {} for download url: {}",
-                    cache_path.display(),
-                    content_len,
-                    url
-                );
-                return Ok((cache_path, content_type));
-            } else {
-                warn!(
-                    "overwriting an existing file {} for url: {}",
-                    cache_path.display(),
-                    url
-                );
-            }
+        if log_enabled!(log::Level::Trace) {
+            trace!(
+                "response has content type: {:?}, content length: {:?} for {}",
+                content_type,
+                resp.content_length(),
+                url
+            );
         }
 
         let mut file = afs::File::create(&cache_path).await?;
         let mut stream = resp.bytes_stream();
 
         trace!("downloading to {} for url: {}", cache_path.display(), url);
+        let mut hasher = Md5::new();
         while let Some(chunk) = stream.next().await {
-            file.write_all(&chunk?).await?;
+            let chunk = chunk?;
+            file.write_all(&chunk).await?;
+            hasher.update(chunk);
         }
+
+        let digest = hasher
+            .finalize()
+            .iter()
+            .fold(String::new(), |a, e| a + &e.to_string());
+        trace!(
+            "writing digest `{}` to {} for {}",
+            digest,
+            md5_path.display(),
+            cache_path.display()
+        );
+        afs::write(&md5_path, digest).await?;
 
         Ok((cache_path, content_type))
     }
-
-    // async fn has_installed(&self) -> Result<bool> {
-    //     todo!()
-    // }
 }
