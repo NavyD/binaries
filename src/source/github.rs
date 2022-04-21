@@ -26,7 +26,7 @@ use crate::{
 /// [Creating a token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token#creating-a-token)
 #[derive(Debug, Clone, Getters)]
 #[getset(get = "pub")]
-struct GithubBinary {
+pub struct GithubBinary {
     config: BinaryConfig,
     client: Client,
     base_url: Url,

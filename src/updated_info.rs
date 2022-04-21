@@ -31,7 +31,7 @@ impl UpdatedInfo {
 
 #[derive(Debug, Clone)]
 pub struct Mapper {
-    pool: SqlitePool,
+    pub pool: SqlitePool,
 }
 
 impl Mapper {

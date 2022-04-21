@@ -30,24 +30,24 @@ use crate::{
     util::{extract, find_one_exe_with_glob, run_cmd},
 };
 
-struct BinaryContext {
-    bins: Vec<BinaryManager>,
+// struct BinaryContext {
+//     bins: Vec<BinaryManager>,
 
-}
+// }
 
-impl BinaryContext {
-    pub fn install(&self) -> Result<()> {
-        for bin in &self.bins {
-            if !bin.has_installed().await? {
-                tokio::spawn(|| async move {
-                    bin.latest_ver().await?;
-                    bin.install()
-                });
-            }
-        }
-        todo!()
-    }
-}
+// impl BinaryContext {
+//     pub fn install(&self) -> Result<()> {
+//         for bin in &self.bins {
+//             if !bin.has_installed().await? {
+//                 tokio::spawn(|| async move {
+//                     bin.latest_ver().await?;
+//                     bin.install()
+//                 });
+//             }
+//         }
+//         todo!()
+//     }
+// }
 // #[async_trait]
 // pub trait Package: Sync {
 //     type Bin: Binary;
@@ -89,7 +89,7 @@ impl BinaryContext {
 
 #[derive(Debug, Getters)]
 #[getset(get = "pub")]
-struct BinaryManager<'a, B: Binary> {
+struct BinaryPackage<'a, B: Binary> {
     bin: B,
     mapper: &'a Mapper,
     client: Client,
@@ -98,7 +98,7 @@ struct BinaryManager<'a, B: Binary> {
     executable_dir: &'a Path,
 }
 
-impl<'a, B: Binary> BinaryManager<'a, B> {
+impl<'a, B: Binary> BinaryPackage<'a, B> {
     pub async fn has_installed(&self) -> bool {
         let name = self.bin().name().to_owned();
         tokio::task::spawn_blocking(move || {
@@ -159,12 +159,12 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
         info!("installing {} version {} for {}", self.bin.name(), ver, url);
 
         // download
-        let (download_path, content_type) = self.download(&url).await?;
+        let download_path = self.download(&url).await?;
         let to = self.bin_data_dir();
         afs::create_dir_all(&to).await?;
 
         // try use custom to extract
-        self.extract(&download_path, &to, content_type).await?;
+        self.extract(&download_path, &to).await?;
 
         // link to exe dir
         let src = {
@@ -211,7 +211,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
     /// * 如果extract hook前中已存在`bin.{name,filename}`目录
     /// * 或之后不存在`bin.{name,filename}`目录
     /// * 如果无法使用通用解压
-    async fn extract<P>(&self, from: P, to: P, content_type: Option<String>) -> Result<()>
+    async fn extract<P>(&self, from: P, to: P) -> Result<()>
     where
         P: AsRef<Path>,
     {
@@ -285,7 +285,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
         }
         // general extracting
         let (from, to) = (word_dir.to_owned(), to.to_owned());
-        tokio::task::spawn_blocking(move || extract(from, to, content_type.as_deref())).await??;
+        tokio::task::spawn_blocking(move || extract(from, to)).await??;
 
         Ok(())
     }
@@ -293,7 +293,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
     /// 下载url对应文件到缓存path
     ///
     /// 如果之前有下载过相同的文件且md5相同则使用缓存文件，否则重新下载
-    async fn download(&self, url: &Url) -> Result<(PathBuf, Option<String>)> {
+    async fn download(&self, url: &Url) -> Result<PathBuf> {
         let filename = url
             .path_segments()
             .and_then(|seg| seg.last())
@@ -314,7 +314,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
                     );
                     tokio::task::spawn_blocking(move || {
                         let mut hasher = Md5::new();
-                        std::io::copy(&mut File::open(&md5_path)?, &mut hasher);
+                        std::io::copy(&mut File::open(&cache_path)?, &mut hasher);
                         let digest: String = hasher
                             .finalize()
                             .iter()
@@ -323,7 +323,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
                             "found new digest {} and old {} for {}",
                             digest,
                             md5_digest,
-                            md5_path.display()
+                            cache_path.display()
                         );
                         Ok::<_, Error>(md5_digest == digest)
                     })
@@ -332,7 +332,7 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
 
                 if is_identical {
                     info!("use cached file {}", cache_path.display());
-                    return Ok((cache_path, None));
+                    return Ok(cache_path);
                 } else {
                     warn!(
                         "inconsistent md5 digest. removing old cache {} and md5 {}",
@@ -355,13 +355,12 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
         debug!("downloading {} for {}", filename, url);
         let resp = self.client().get(url.as_ref()).send().await?;
 
-        let content_type = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(ToString::to_string);
-
         if log_enabled!(log::Level::Trace) {
+            let content_type = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(ToString::to_string);
             trace!(
                 "response has content type: {:?}, content length: {:?} for {}",
                 content_type,
@@ -380,11 +379,11 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
             file.write_all(&chunk).await?;
             hasher.update(chunk);
         }
-
         let digest = hasher
             .finalize()
             .iter()
             .fold(String::new(), |a, e| a + &e.to_string());
+
         trace!(
             "writing digest `{}` to {} for {}",
             digest,
@@ -393,6 +392,161 @@ impl<'a, B: Binary> BinaryManager<'a, B> {
         );
         afs::write(&md5_path, digest).await?;
 
-        Ok((cache_path, content_type))
+        Ok(cache_path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        env, fs::Permissions, iter::once, os::unix::prelude::PermissionsExt, thread, time::Duration,
+    };
+
+    use futures_util::TryStreamExt;
+    use once_cell::sync::Lazy;
+    use reqwest::{
+        header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT},
+        ClientBuilder,
+    };
+    use sqlx::sqlite::SqlitePoolOptions;
+    use tempfile::{tempdir, TempDir};
+    use tokio::{
+        fs::{create_dir_all, write},
+        runtime::Runtime,
+    };
+
+    use crate::source::github::GithubBinary;
+    use crate::source::{github::BinaryConfigBuilder, Visible};
+
+    use super::*;
+
+    pub static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    });
+
+    static MAPPER: Lazy<Mapper> = Lazy::new(|| {
+        thread::spawn(|| {
+            let pool = TOKIO_RT
+                .block_on(
+                    SqlitePoolOptions::new()
+                        .max_connections(4)
+                        .connect("sqlite::memory:"),
+                )
+                .unwrap();
+            Mapper { pool }
+        })
+        .join()
+        .unwrap()
+    });
+
+    static TEMP: Lazy<TempDir> = Lazy::new(|| tempdir().unwrap());
+
+    static BIN: Lazy<GithubBinary> = Lazy::new(|| {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/vnd.github.v3+json"),
+        );
+
+        let name = "Authorization";
+        if let Ok(val) = std::env::var(name) {
+            info!("loaded token {}={} for github rate limit", name, val);
+            headers.insert(name, HeaderValue::from_str(&val).unwrap());
+        }
+        headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Safari/537.36"));
+
+        let client = ClientBuilder::new()
+            .timeout(Duration::from_secs(5))
+            .default_headers(headers)
+            .build()
+            .expect("build client");
+        let config = BinaryConfigBuilder::default()
+            .name("Dreamacro/clash")
+            .build()
+            .expect("building bin config");
+
+        GithubBinary::new(client, config)
+    });
+
+    static DIRS: Lazy<(PathBuf, PathBuf, PathBuf)> = Lazy::new(|| {
+        let root = TEMP.path();
+        (
+            root.join("cache_dir"),
+            root.join("data_dir"),
+            root.join("exe_dir"),
+        )
+    });
+
+    static PKG: Lazy<BinaryPackage<GithubBinary>> = Lazy::new(|| {
+        let client = ClientBuilder::new()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("build client");
+
+        let exe_path = &DIRS.2;
+        let new_path = env::join_paths(
+            env::split_paths(&env::var("PATH").unwrap()).chain(once(exe_path.clone())),
+        )
+        .unwrap();
+        env::set_var("PATH", &new_path);
+
+        std::fs::create_dir_all(&DIRS.0).unwrap();
+        std::fs::create_dir_all(&DIRS.1).unwrap();
+        std::fs::create_dir_all(&DIRS.2).unwrap();
+
+        BinaryPackage {
+            bin: BIN.clone(),
+            client,
+            cache_dir: &DIRS.0,
+            data_dir: &DIRS.1,
+            executable_dir: exe_path,
+            mapper: &MAPPER,
+        }
+    });
+
+    #[tokio::test]
+    async fn test_download() -> Result<()> {
+        let ver = "v1.10.0";
+        let url = PKG.bin.get_url(ver).await?;
+        let path = PKG.download(&url).await?;
+
+        assert!(path.is_file());
+        assert_eq!(
+            path.file_name().and_then(|p| p.to_str()),
+            url.path_segments().and_then(|p| p.last())
+        );
+
+        let new_path = PKG.download(&url).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_exe_path() -> Result<()> {
+        let bin_name = "bin_exe";
+        assert!(which(bin_name).is_err());
+
+        let exe_path = TEMP.path().join("exe");
+        create_dir_all(&exe_path).await?;
+
+        let exe_file = exe_path.join(bin_name);
+        let content = r#"
+#!/bin/sh
+echo 'hello'"#;
+        write(&exe_file, content).await?;
+
+        let perm = afs::metadata(&exe_file).await?.permissions();
+        afs::set_permissions(&exe_file, Permissions::from_mode(0o770)).await?;
+
+        let path = env::var("PATH")?;
+        let mut paths = env::split_paths(&path).collect::<Vec<_>>();
+        paths.push(exe_path);
+        let new_path = env::join_paths(paths)?;
+        env::set_var("PATH", &new_path);
+
+        assert_eq!(which(bin_name), Ok(exe_file));
+        Ok(())
     }
 }

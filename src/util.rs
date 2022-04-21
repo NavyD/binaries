@@ -6,14 +6,16 @@ use std::process::Stdio;
 use std::{collections::HashSet, env::consts::ARCH, path::Path};
 
 use anyhow::bail;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use flate2::read::GzDecoder;
 use globset::Glob;
 use log::trace;
-use log::{debug, info};
+use log::{debug, error, info};
 use mime::Mime;
+use mime_guess::MimeGuess;
 use once_cell::sync::Lazy;
 use tar::Archive;
+use tokio::fs::remove_file;
 use tokio::process::Command;
 use walkdir::WalkDir;
 use zip::ZipArchive;
@@ -56,14 +58,11 @@ pub fn get_archs() -> Vec<String> {
     .collect::<_>()
 }
 
-pub fn extract<P>(from: P, to: P, content_type: Option<&str>) -> Result<()>
+pub fn extract<P>(from: P, to: P) -> Result<()>
 where
     P: AsRef<Path>,
 {
     let (from, to) = (from.as_ref(), to.as_ref());
-    if let Some(ty) = content_type {
-        return ex(from, to, &ty.parse()?).map_err(Into::into);
-    }
 
     let mimes = mime_guess::from_path(from);
     for ty in &mimes {
@@ -101,7 +100,7 @@ where
 
     match content_type.as_ref() {
         "application/zip" => ex_zip(File::open(from)?, to)?,
-        "application/gzip" => ex_gzip(File::open(from)?, to)?,
+        "application/gzip" => ex_gzip(from, to)?,
         _ => bail!("unsupported compress type: {}", content_type),
     }
 
@@ -241,10 +240,38 @@ fn ex_zip(from: impl Read + Seek, to: impl AsRef<Path>) -> Result<()> {
     Ok(())
 }
 
-fn ex_gzip<P: AsRef<Path>, R: Read>(from: R, to: P) -> Result<()> {
-    let tar = GzDecoder::new(from);
-    let mut archive = Archive::new(tar);
-    archive.unpack(to)?;
+fn ex_gzip<P: AsRef<Path>>(from: P, to: P) -> Result<()> {
+    let file = fs::File::open(&from)?;
+    let mut gz_read = GzDecoder::new(file);
+    let filename = from
+        .as_ref()
+        .file_stem()
+        .and_then(|p| p.to_str())
+        .ok_or_else(|| anyhow!("no filename"))?;
+    let to_file_path = to.as_ref().join(filename);
+    trace!(
+        "extracting gzip to {} from {}",
+        to_file_path.display(),
+        from.as_ref().display()
+    );
+    io::copy(&mut gz_read, &mut fs::File::create(&to_file_path)?)?;
+
+    let xtar = "application/x-tar".parse::<Mime>()?;
+    if mime_guess::from_path(&to_file_path)
+        .iter()
+        .any(|x| x == xtar)
+    {
+        let mut archive = Archive::new(fs::File::open(&to_file_path)?);
+        trace!(
+            "unpack tar to {} from {}",
+            to.as_ref().display(),
+            to_file_path.display(),
+        );
+        archive.unpack(to)?;
+
+        fs::remove_file(&to_file_path)?;
+    }
+
     Ok(())
 }
 
@@ -266,11 +293,20 @@ mod tests {
         let zip_path = "tests/a.tar.gz".parse::<PathBuf>()?;
         let root = tempdir()?;
         assert!(!root.path().join("a").is_dir());
-        ex_gzip(File::open(zip_path)?, root.path())?;
+        ex_gzip(zip_path.as_path(), root.path())?;
 
         assert!(root.path().join("a").is_dir());
         assert!(root.path().join("a/a.txt").is_file());
         assert!(root.path().join("a/b/a.txt").is_file());
+
+        // let zip_path = "clash.gz".parse::<PathBuf>()?;
+        // let root = tempdir()?;
+        // assert!(!root.path().join("a").is_dir());
+        // ex_gzip(zip_path.as_path(), root.path())?;
+
+        // assert!(root.path().join("a").is_dir());
+        // assert!(root.path().join("a/a.txt").is_file());
+        // assert!(root.path().join("a/b/a.txt").is_file());
         Ok(())
     }
 
