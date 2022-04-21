@@ -30,6 +30,24 @@ use crate::{
     util::{extract, find_one_exe_with_glob, run_cmd},
 };
 
+struct BinaryContext {
+    bins: Vec<BinaryManager>,
+
+}
+
+impl BinaryContext {
+    pub fn install(&self) -> Result<()> {
+        for bin in &self.bins {
+            if !bin.has_installed().await? {
+                tokio::spawn(|| async move {
+                    bin.latest_ver().await?;
+                    bin.install()
+                });
+            }
+        }
+        todo!()
+    }
+}
 // #[async_trait]
 // pub trait Package: Sync {
 //     type Bin: Binary;

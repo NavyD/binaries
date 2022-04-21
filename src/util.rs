@@ -48,7 +48,7 @@ pub fn get_archs() -> Vec<String> {
         "x86" => vec!["386", "686", "linux32"],
         "x86_64" => vec!["x86_64", "amd64", "intel", "linux64"],
         "aarch64" => vec!["arm64"],
-        _ => vec![],
+        _ => panic!("unsupported arch: {}", ARCH),
     }
     .into_iter()
     .chain([ARCH])
@@ -130,6 +130,7 @@ pub fn find_one_exe_with_glob(base: impl AsRef<Path>, glob_pat: &str) -> Result<
             base.display()
         );
     } else if paths.len() > 1 {
+        debug!("found {} paths for exe glob: {}", paths.len(), glob_pat);
         let paths = paths
             .iter()
             .filter(|p| {
@@ -138,13 +139,15 @@ pub fn find_one_exe_with_glob(base: impl AsRef<Path>, glob_pat: &str) -> Result<
                     .map_or(false, |data| data.permissions().mode() & 0o111 != 0)
             })
             .collect::<Vec<_>>();
+        trace!("found {} paths by filter exe permissions", paths.len());
         if paths.len() != 1 {
-            bail!(
+            error!(
                 "failed to get exe file with glob {} in {}. executable paths: {:?}",
                 glob_pat,
                 base.display(),
                 paths
             );
+            bail!("not found a path for exe glob: {}", glob_pat);
         }
         paths[0]
     } else {
