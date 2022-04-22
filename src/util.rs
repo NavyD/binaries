@@ -50,7 +50,7 @@ pub fn get_archs() -> Vec<String> {
         "x86" => vec!["386", "686", "linux32"],
         "x86_64" => vec!["x86_64", "amd64", "intel", "linux64"],
         "aarch64" => vec!["arm64"],
-        _ => panic!("unsupported arch: {}", ARCH),
+        s => panic!("unsupported arch: {}", s),
     }
     .into_iter()
     .chain([ARCH])
@@ -64,6 +64,7 @@ where
 {
     let (from, to) = (from.as_ref(), to.as_ref());
 
+    let types = infer::get_from_path(&from)?;
     let mimes = mime_guess::from_path(from);
     for ty in &mimes {
         if let Err(e) = ex(from, to, &ty) {
@@ -170,14 +171,14 @@ pub async fn run_cmd(cmd: &str, work_dir: impl AsRef<Path>) -> Result<()> {
         .stderr(Stdio::piped())
         .spawn()?;
     let output = child.wait_with_output().await?;
+    trace!(
+        "`{}` stdout: {}, stderr: {}",
+        cmd,
+        std::str::from_utf8(&output.stdout)?,
+        std::str::from_utf8(&output.stderr)?,
+    );
     if !output.status.success() {
-        bail!(
-            "failed to run a command `{}` status {}. stdout: {}\nstderr: {}",
-            cmd,
-            output.status,
-            std::str::from_utf8(&output.stdout)?,
-            std::str::from_utf8(&output.stderr)?,
-        );
+        bail!("failed to run a command `{}` status {}", cmd, output.status,);
     }
     Ok(())
 }

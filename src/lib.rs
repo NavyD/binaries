@@ -5,6 +5,7 @@ pub mod config;
 pub mod manager;
 pub mod updated_info;
 pub mod util;
+pub mod extract;
 
 pub static CRATE_NAME: &str = env!("CARGO_CRATE_NAME");
 

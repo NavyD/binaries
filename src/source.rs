@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use getset::{Getters, Setters};
+use derive_builder::Builder;
+use getset::{Getters, MutGetters, Setters};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -34,17 +35,23 @@ pub enum Version {
     Some(String),
 }
 
-#[derive(Debug, Getters, Setters, Clone, Serialize, Deserialize)]
+#[derive(Debug, Getters, Builder, Setters, Clone, Serialize, Deserialize)]
 #[getset(get = "pub")]
+#[builder(pattern = "mutable", setter(into, strip_option))]
 pub struct Hook {
+    #[builder(default)]
     work_dir: Option<PathBuf>,
     action: HookAction,
 }
 
-#[derive(Debug, Getters, Setters, Clone, Serialize, Deserialize)]
-#[getset(get = "pub")]
+#[derive(Debug, Getters, Builder, MutGetters, Clone, Serialize, Deserialize)]
+#[getset(get = "pub", get_mut = "pub")]
+#[builder(pattern = "mutable", setter(into, strip_option))]
 pub struct HookAction {
+    #[builder(default)]
     install: Option<String>,
+    #[builder(default)]
     update: Option<String>,
+    #[builder(default)]
     extract: Option<String>,
 }

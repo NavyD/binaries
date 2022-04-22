@@ -10,10 +10,12 @@ use derive_builder::Builder;
 use futures_util::TryFutureExt;
 use futures_util::{FutureExt, StreamExt};
 use getset::Getters;
+use handlebars::Handlebars;
 use log::log_enabled;
 use log::{debug, error, info, trace, warn};
 use md5::{Digest, Md5};
 use reqwest::Client;
+use serde_json::json;
 use tokio::fs::read_to_string;
 use tokio::fs::remove_file;
 use tokio::sync::Mutex;
@@ -24,8 +26,7 @@ use tokio::{
 use url::Url;
 use which::which;
 
-use crate::source::Binary;
-use crate::source::Version;
+use crate::source::{Binary, Hook, HookAction, HookActionBuilder, HookBuilder, Version};
 use crate::{
     updated_info::{Mapper, UpdatedInfo},
     util::{extract, find_one_exe_with_glob, run_cmd},
@@ -88,15 +89,16 @@ use crate::{
 //     }
 // }
 
-#[derive(Debug, Getters, Builder)]
+#[derive(Debug, Getters, Builder, Clone)]
 #[getset(get = "pub")]
 struct BinaryPackage<'a, B: Binary> {
     bin: B,
     mapper: &'a Mapper,
     client: Client,
-    data_dir: &'a Path,
-    cache_dir: &'a Path,
-    executable_dir: &'a Path,
+    data_dir: PathBuf,
+    cache_dir: PathBuf,
+    executable_dir: PathBuf,
+    template: &'a Handlebars<'a>,
 }
 
 impl<'a, B: Binary> BinaryPackage<'a, B> {
@@ -232,6 +234,15 @@ impl<'a, B: Binary> BinaryPackage<'a, B> {
             .as_ref()
             .and_then(|h| h.action().extract().as_deref())
         {
+            let cmd = self.template.render_template(
+                cmd,
+                &json!({ "filename": from
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(ToString::to_string)
+                .ok_or_else(|| anyhow!("not found filename for {}", from.display()))? }),
+            )?;
+
             // before: check if exists
             let paths = from
                 .file_stem()
@@ -243,6 +254,7 @@ impl<'a, B: Binary> BinaryPackage<'a, B> {
                 .collect::<Vec<_>>();
 
             trace!("extracting to {:?} with hook: {}", paths, cmd);
+            let to = to.join(self.bin.name());
 
             // if any exists
             for p in &paths {
@@ -262,7 +274,7 @@ impl<'a, B: Binary> BinaryPackage<'a, B> {
             }
 
             debug!("running hook {} in {}", cmd, word_dir.display());
-            run_cmd(cmd, &word_dir).await?;
+            run_cmd(&cmd, &word_dir).await?;
 
             for p in &paths {
                 if afs::metadata(&p).await.is_ok() {
@@ -409,8 +421,11 @@ mod tests {
         runtime::Runtime,
     };
 
-    use crate::source::github::GithubBinary;
     use crate::source::{github::BinaryConfigBuilder, Visible};
+    use crate::source::{
+        github::{BinaryConfig, GithubBinary},
+        Hook,
+    };
 
     use super::*;
 
@@ -438,7 +453,19 @@ mod tests {
 
     static TEMP: Lazy<TempDir> = Lazy::new(|| tempdir().unwrap());
 
-    static BIN: Lazy<GithubBinary> = Lazy::new(|| {
+    static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| TEMP.path().join("cache_dir"));
+    static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| TEMP.path().join("data_dir"));
+    static EXE_DIR: Lazy<PathBuf> = Lazy::new(|| TEMP.path().join("exe_dir"));
+
+    static PKG: Lazy<BinaryPackage<GithubBinary>> = Lazy::new(|| {
+        let bin = BinaryConfigBuilder::default()
+            .name("Dreamacro/clash")
+            .build()
+            .expect("building bin config");
+        create_pkg(bin).unwrap()
+    });
+
+    static BIN_CLIENT: Lazy<Client> = Lazy::new(|| {
         let mut headers = HeaderMap::new();
         headers.insert(
             ACCEPT,
@@ -452,54 +479,95 @@ mod tests {
         }
         headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Safari/537.36"));
 
-        let client = ClientBuilder::new()
+        ClientBuilder::new()
             .timeout(Duration::from_secs(5))
             .default_headers(headers)
             .build()
-            .expect("build client");
-        let config = BinaryConfigBuilder::default()
-            .name("Dreamacro/clash")
-            .build()
-            .expect("building bin config");
-
-        GithubBinary::new(client, config)
+            .expect("build client")
     });
 
-    static DIRS: Lazy<(PathBuf, PathBuf, PathBuf)> = Lazy::new(|| {
-        let root = TEMP.path();
-        (
-            root.join("cache_dir"),
-            root.join("data_dir"),
-            root.join("exe_dir"),
-        )
-    });
+    static HANDLEBARS: Lazy<Handlebars> = Lazy::new(|| Handlebars::new());
 
-    static PKG: Lazy<BinaryPackage<GithubBinary>> = Lazy::new(|| {
+    fn create_pkg(config: BinaryConfig) -> Result<BinaryPackage<'static, GithubBinary>> {
+        let bin = GithubBinary::new(BIN_CLIENT.clone(), config);
+
         let client = ClientBuilder::new()
             .timeout(Duration::from_secs(10))
-            .build()
-            .expect("build client");
+            .build()?;
 
-        let exe_path = &DIRS.2;
         let new_path = env::join_paths(
-            env::split_paths(&env::var("PATH").unwrap()).chain(once(exe_path.clone())),
-        )
-        .unwrap();
+            env::split_paths(&env::var("PATH").unwrap()).chain(once(EXE_DIR.clone())),
+        )?;
         env::set_var("PATH", &new_path);
 
-        std::fs::create_dir_all(&DIRS.0).unwrap();
-        std::fs::create_dir_all(&DIRS.1).unwrap();
-        std::fs::create_dir_all(&DIRS.2).unwrap();
+        std::fs::create_dir_all(&*CACHE_DIR)?;
+        std::fs::create_dir_all(&*DATA_DIR)?;
+        std::fs::create_dir_all(&*EXE_DIR)?;
 
-        BinaryPackage {
-            bin: BIN.clone(),
+        Ok(BinaryPackage {
+            bin,
             client,
-            cache_dir: &DIRS.0,
-            data_dir: &DIRS.1,
-            executable_dir: exe_path,
+            cache_dir: CACHE_DIR.clone(),
+            data_dir: DATA_DIR.clone(),
+            executable_dir: EXE_DIR.clone(),
             mapper: &MAPPER,
-        }
-    });
+            template: &HANDLEBARS,
+        })
+    }
+
+    #[tokio::test]
+    async fn test_extract_when() -> Result<()> {
+        let config = BinaryConfigBuilder::default()
+            .name("XAMPPRocky/tokei")
+            // .hook(
+            //     HookBuilder::default()
+            //         .action(
+            //             HookActionBuilder::default()
+            //                 .extract("gzip -d --keep {{ filename }}")
+            //                 .build()?,
+            //         )
+            //         .build()?,
+            // )
+            .build()?;
+
+        let ver = "v12.1.2";
+        let pkg = create_pkg(config)?;
+        let url = pkg.bin.get_url(ver).await?;
+        let from = pkg.download(&url).await?;
+
+        let to = DATA_DIR.clone();
+        pkg.extract(&from, &to).await?;
+
+        assert!(to.join("tokei").is_dir());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_extract_when_hook() -> Result<()> {
+        let config = BinaryConfigBuilder::default()
+            .name("Dreamacro/clash")
+            .hook(
+                HookBuilder::default()
+                    .action(
+                        HookActionBuilder::default()
+                            .extract("gzip -d --keep {{ filename }}")
+                            .build()?,
+                    )
+                    .build()?,
+            )
+            .build()?;
+
+        let ver = "v1.10.0";
+        let pkg = create_pkg(config)?;
+        let url = pkg.bin.get_url(ver).await?;
+        let from = pkg.download(&url).await?;
+
+        let to = DATA_DIR.clone();
+        pkg.extract(&from, &to).await?;
+
+        assert!(to.join("clash").is_file());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_download() -> Result<()> {
