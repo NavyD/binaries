@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::Error;
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
+use derive_builder::Builder;
 use futures_util::TryFutureExt;
 use futures_util::{FutureExt, StreamExt};
 use getset::Getters;
@@ -87,7 +88,7 @@ use crate::{
 //     }
 // }
 
-#[derive(Debug, Getters)]
+#[derive(Debug, Getters, Builder)]
 #[getset(get = "pub")]
 struct BinaryPackage<'a, B: Binary> {
     bin: B,
@@ -108,10 +109,7 @@ impl<'a, B: Binary> BinaryPackage<'a, B> {
             })
         })
         .await
-        .unwrap_or_else(|e| {
-            error!("failed spawn blocking `which` task: {}", e);
-            false
-        })
+        .expect("failed spawn blocking `which` task")
     }
 
     pub async fn updateable_ver(&self) -> Option<(String, String)> {
@@ -307,14 +305,11 @@ impl<'a, B: Binary> BinaryPackage<'a, B> {
         if afs::metadata(&cache_path).await.is_ok() {
             if afs::metadata(&md5_path).await.is_ok() {
                 let is_identical = {
-                    let (md5_digest, cache_path, md5_path) = (
-                        read_to_string(&md5_path).await?,
-                        cache_path.clone(),
-                        md5_path.clone(),
-                    );
+                    let (md5_digest, cache_path) =
+                        (read_to_string(&md5_path).await?, cache_path.clone());
                     tokio::task::spawn_blocking(move || {
                         let mut hasher = Md5::new();
-                        std::io::copy(&mut File::open(&cache_path)?, &mut hasher);
+                        std::io::copy(&mut File::open(&cache_path)?, &mut hasher)?;
                         let digest: String = hasher
                             .finalize()
                             .iter()
@@ -402,7 +397,6 @@ mod tests {
         env, fs::Permissions, iter::once, os::unix::prelude::PermissionsExt, thread, time::Duration,
     };
 
-    use futures_util::TryStreamExt;
     use once_cell::sync::Lazy;
     use reqwest::{
         header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT},
@@ -519,7 +513,7 @@ mod tests {
             url.path_segments().and_then(|p| p.last())
         );
 
-        let new_path = PKG.download(&url).await?;
+        let _ = PKG.download(&url).await?;
         Ok(())
     }
 
@@ -537,7 +531,6 @@ mod tests {
 echo 'hello'"#;
         write(&exe_file, content).await?;
 
-        let perm = afs::metadata(&exe_file).await?.permissions();
         afs::set_permissions(&exe_file, Permissions::from_mode(0o770)).await?;
 
         let path = env::var("PATH")?;

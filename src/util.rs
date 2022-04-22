@@ -229,8 +229,6 @@ fn ex_zip(from: impl Read + Seek, to: impl AsRef<Path>) -> Result<()> {
         // Get and Set permissions
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-
             if let Some(mode) = file.unix_mode() {
                 fs::set_permissions(&outpath, Permissions::from_mode(mode)).unwrap();
             }
@@ -277,7 +275,9 @@ fn ex_gzip<P: AsRef<Path>>(from: P, to: P) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use futures_util::StreamExt;
     use tempfile::tempdir;
+    use tokio::io::AsyncWriteExt;
 
     use super::*;
 
@@ -298,15 +298,35 @@ mod tests {
         assert!(root.path().join("a").is_dir());
         assert!(root.path().join("a/a.txt").is_file());
         assert!(root.path().join("a/b/a.txt").is_file());
+        Ok(())
+    }
 
-        // let zip_path = "clash.gz".parse::<PathBuf>()?;
-        // let root = tempdir()?;
-        // assert!(!root.path().join("a").is_dir());
-        // ex_gzip(zip_path.as_path(), root.path())?;
+    #[tokio::test]
+    async fn test_gzip_to_one() -> Result<()> {
+        let url = "https://github.com/Dreamacro/clash/releases/download/v1.10.0/clash-linux-amd64-v1.10.0.gz".parse::<url::Url>()?;
+        let filename = url
+            .path()
+            .parse::<PathBuf>()
+            .ok()
+            .and_then(|p| {
+                p.file_name()
+                    .and_then(|s| s.to_str().map(ToString::to_string))
+            })
+            .unwrap_or_else(|| panic!("not found filename for url: {}", url));
 
-        // assert!(root.path().join("a").is_dir());
-        // assert!(root.path().join("a/a.txt").is_file());
-        // assert!(root.path().join("a/b/a.txt").is_file());
+        let mut stream = reqwest::get(url.as_ref()).await?.bytes_stream();
+        let root = tempdir()?;
+        let from = root.path().join(filename);
+        let to = root.path();
+        let mut file = tokio::fs::File::create(&from).await?;
+        while let Some(chunk) = stream.next().await {
+            file.write_all(&chunk?).await?;
+        }
+
+        ex_gzip(from.as_path(), to)?;
+
+        let target = to.join("clash-linux-amd64-v1.10.0");
+        assert!(target.is_file());
         Ok(())
     }
 
@@ -321,9 +341,5 @@ mod tests {
         assert!(root.path().join("a/a.txt").is_file());
         assert!(root.path().join("a/b/a.txt").is_file());
         Ok(())
-    }
-
-    fn create_zip() -> Result<PathBuf> {
-        todo!()
     }
 }
