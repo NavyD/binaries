@@ -5,10 +5,9 @@ use std::{
     path::Path,
 };
 
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{anyhow, bail, Result};
 use flate2::read::GzDecoder;
-use futures_util::{FutureExt, Stream, StreamExt};
-use log::{debug, error, info, trace};
+use log::{debug, info, trace};
 use mime::Mime;
 use once_cell::sync::Lazy;
 use tar::Archive;
@@ -212,6 +211,7 @@ fn ex_gzip<P: AsRef<Path>>(from: P, to: P) -> Result<()> {
 mod tests {
     use std::path::PathBuf;
 
+    use futures_util::StreamExt;
     use tempfile::tempdir;
     use tokio::io::AsyncWriteExt;
 

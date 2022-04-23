@@ -1,24 +1,15 @@
-use std::fs::{self, create_dir_all, File, Permissions};
-use std::io::{self, Read, Seek};
 use std::os::unix::prelude::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::{collections::HashSet, env::consts::ARCH, path::Path};
+use std::{env::consts::ARCH, path::Path};
 
 use anyhow::bail;
-use anyhow::{anyhow, Result};
-use flate2::read::GzDecoder;
+use anyhow::Result;
 use globset::Glob;
 use log::trace;
-use log::{debug, error, info};
-use mime::Mime;
-use mime_guess::MimeGuess;
-use once_cell::sync::Lazy;
-use tar::Archive;
-use tokio::fs::remove_file;
+use log::{debug, error};
 use tokio::process::Command;
 use walkdir::WalkDir;
-use zip::ZipArchive;
 
 /// get strings of [ARCH][std::env::consts::ARCH].
 ///

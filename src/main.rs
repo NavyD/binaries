@@ -1,5 +1,3 @@
-use binaries::{manager::BinaryPackage, source::Binary};
-
 #[tokio::main]
 async fn main() {
     //启用日志输出，你也可以使用其他日志框架，这个不限定的

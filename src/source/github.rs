@@ -1,18 +1,16 @@
-use std::{env::consts::OS, fmt::Display, path::PathBuf, sync::Arc};
+use std::{env::consts::OS, path::PathBuf};
 
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use derive_builder::Builder;
-use futures_util::{FutureExt, StreamExt};
 use getset::{Getters, Setters};
 use log::{debug, error, log_enabled, trace, warn};
 use mime::Mime;
 use regex::Regex;
-use reqwest::{header::HeaderValue, Client};
-use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
-use serde_json::Value;
-use tokio::sync::Mutex;
+use reqwest::Client;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
 use url::Url;
 
 use super::{Binary, Version, Visible};
@@ -329,7 +327,7 @@ where
             re.push_str(&s);
         }
         re
-    };
+    }
 
     for step in (0..=conditions.len()).rev() {
         for i in (0..conditions.len()).step_by(step) {
@@ -440,7 +438,7 @@ impl BinaryConfig {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::read_to_string, iter, time::Duration};
+    use std::{fs::read_to_string, time::Duration};
 
     use log::info;
     use once_cell::sync::Lazy;
@@ -529,12 +527,12 @@ mod tests {
             }
         );
 
-        let res: Release = serde_json::from_str::<ResponseResult>(&read_to_string(
+        let _res: Release = serde_json::from_str::<ResponseResult>(&read_to_string(
             "tests/clash_latest_release.json",
         )?)?
         .to()?;
 
-        let res: Vec<Release> =
+        let _res: Vec<Release> =
             serde_json::from_str::<ResponseResult>(&read_to_string("tests/clash_releases.json")?)?
                 .to()?;
         Ok(())

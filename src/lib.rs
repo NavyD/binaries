@@ -1,11 +1,11 @@
 // #![allow(unused)]
 
-pub mod source;
 pub mod config;
+pub mod extract;
 pub mod manager;
+pub mod source;
 pub mod updated_info;
 pub mod util;
-pub mod extract;
 
 pub static CRATE_NAME: &str = env!("CARGO_CRATE_NAME");
 
@@ -27,7 +27,7 @@ mod tests {
                 .init();
             match dotenv::dotenv() {
                 Ok(p) => info!("loaded .env from {}", p.display()),
-                Err(e) => warn!("not found .env"),
+                Err(_e) => warn!("not found .env"),
             }
         });
     }

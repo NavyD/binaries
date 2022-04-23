@@ -1,14 +1,11 @@
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::Error;
 use anyhow::{anyhow, bail, Result};
-use async_trait::async_trait;
 use derive_builder::Builder;
-use futures_util::TryFutureExt;
-use futures_util::{FutureExt, StreamExt};
+use futures_util::StreamExt;
 use getset::Getters;
 use handlebars::Handlebars;
 use log::log_enabled;
@@ -18,7 +15,6 @@ use reqwest::Client;
 use serde_json::json;
 use tokio::fs::read_to_string;
 use tokio::fs::remove_file;
-use tokio::sync::Mutex;
 use tokio::{
     fs::{self as afs},
     io::AsyncWriteExt,
@@ -26,11 +22,11 @@ use tokio::{
 use url::Url;
 use which::which;
 
-use crate::source::{Binary, Hook, HookAction, HookActionBuilder, HookBuilder, Version};
+use crate::source::{Binary, Version};
 use crate::{
     extract::decompress,
     updated_info::{Mapper, UpdatedInfo},
-    util::{find_one_exe_with_glob, run_cmd},
+    util::find_one_exe_with_glob,
 };
 
 // struct BinaryContext {
@@ -401,11 +397,8 @@ mod tests {
         runtime::Runtime,
     };
 
-    use crate::source::{github::BinaryConfigBuilder, Visible};
-    use crate::source::{
-        github::{BinaryConfig, GithubBinary},
-        Hook,
-    };
+    use crate::source::github::{BinaryConfig, GithubBinary};
+    use crate::source::{github::BinaryConfigBuilder, HookActionBuilder, HookBuilder, Visible};
 
     use super::*;
 
