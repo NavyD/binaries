@@ -28,8 +28,9 @@ use which::which;
 
 use crate::source::{Binary, Hook, HookAction, HookActionBuilder, HookBuilder, Version};
 use crate::{
+    extract::decompress,
     updated_info::{Mapper, UpdatedInfo},
-    util::{extract, find_one_exe_with_glob, run_cmd},
+    util::{find_one_exe_with_glob, run_cmd},
 };
 
 // struct BinaryContext {
@@ -91,7 +92,7 @@ use crate::{
 
 #[derive(Debug, Getters, Builder, Clone)]
 #[getset(get = "pub")]
-struct BinaryPackage<'a, B: Binary> {
+pub struct BinaryPackage<'a, B: Binary> {
     bin: B,
     mapper: &'a Mapper,
     client: Client,
@@ -140,17 +141,25 @@ impl<'a, B: Binary> BinaryPackage<'a, B> {
     }
 
     async fn uninstall(&self) -> Result<()> {
-        let link = self.link_path();
+        let link = self.bin_link_path();
+        trace!("removing link file {}", link.display());
         if let Err(e) = afs::remove_file(&link).await {
-            debug!("failed to remove a link file {}: {}", link.display(), e);
+            info!("failed to remove a link file {}: {}", link.display(), e);
         }
 
         let bin_dir = self.bin_data_dir();
+        trace!("removing data dir {}", bin_dir.display());
         if let Err(e) = afs::remove_dir_all(&bin_dir).await {
-            debug!("failed to remove a dir {}: {}", bin_dir.display(), e);
+            info!("failed to remove data dir {}: {}", bin_dir.display(), e);
         }
 
-        // TODO: remove temp dir of extract hook
+        let cache_dir = self.bin_cache_dir();
+        trace!("removing cache dir {}", cache_dir.display());
+        if let Err(e) = afs::remove_dir_all(&cache_dir).await {
+            info!("failed to remove cache dir {}: {}", cache_dir.display(), e);
+        }
+
+        // TODO: remove db
         Ok(())
     }
 
@@ -167,22 +176,7 @@ impl<'a, B: Binary> BinaryPackage<'a, B> {
         self.extract(&download_path, &to).await?;
 
         // link to exe dir
-        let src = {
-            let glob_pat = self
-                .bin
-                .exe_glob()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| format!("**/*{}*", self.bin.name()));
-            let base = to.to_path_buf();
-            tokio::task::spawn_blocking(move || find_one_exe_with_glob(base, &glob_pat)).await??
-        };
-        let dst = self.link_path();
-        if afs::metadata(&dst).await.is_ok() {
-            bail!("found a existing file {} in exe dir", dst.display());
-        }
-
-        info!("sym linking {} to {}", src.display(), dst.display());
-        tokio::fs::symlink(src, dst).await?;
+        self.link(&to).await?;
 
         // inserto into db
         let info = UpdatedInfo::with_installed(self.bin.name(), ver);
@@ -191,12 +185,55 @@ impl<'a, B: Binary> BinaryPackage<'a, B> {
         Ok(())
     }
 
-    fn link_path(&self) -> PathBuf {
+    async fn link<P>(&self, to: P) -> Result<()>
+    where
+        P: AsRef<Path>,
+    {
+        let src = {
+            let base = to.as_ref().to_path_buf();
+            let glob_pat = self
+                .bin
+                .exe_glob()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| {
+                    let pat = format!("**/*{}*", self.bin.name());
+                    info!(
+                        "use default glob pattern {} in directory {}",
+                        pat,
+                        base.display()
+                    );
+                    pat
+                });
+            tokio::task::spawn_blocking(move || find_one_exe_with_glob(base, &glob_pat)).await??
+        };
+
+        afs::create_dir_all(&self.executable_dir).await?;
+        let dst = self.bin_link_path();
+
+        if let Ok(d) = afs::metadata(&dst).await {
+            error!(
+                "found a existing path {} for linking. is link: {}",
+                dst.display(),
+                d.is_symlink()
+            );
+            bail!("a existing path {} for linking", dst.display());
+        }
+
+        info!("sym linking {} to {}", src.display(), dst.display());
+        tokio::fs::symlink(src, dst).await?;
+        Ok(())
+    }
+
+    fn bin_link_path(&self) -> PathBuf {
         self.executable_dir.join(self.bin.name())
     }
 
     fn bin_data_dir(&self) -> PathBuf {
         self.data_dir.join(self.bin.name())
+    }
+
+    fn bin_cache_dir(&self) -> PathBuf {
+        self.cache_dir.join(self.bin.name())
     }
 
     /// 尝试解压from到to中
@@ -215,89 +252,26 @@ impl<'a, B: Binary> BinaryPackage<'a, B> {
     where
         P: AsRef<Path>,
     {
-        let (from, to) = (from.as_ref().to_owned(), to.as_ref().to_owned());
-
-        let word_dir = from
-            .parent()
-            .ok_or_else(|| anyhow!("not found parent dir for: {}", from.display()))?;
-
-        debug!(
-            "extracting to {} from {} in word dir: {}",
-            to.display(),
-            from.display(),
-            word_dir.display()
-        );
-        // try use custom to extract
-        if let Some(cmd) = self
+        let cmd = self
             .bin
             .hook()
-            .as_ref()
             .and_then(|h| h.action().extract().as_deref())
-        {
-            let cmd = self.template.render_template(
-                cmd,
-                &json!({ "filename": from
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(ToString::to_string)
-                .ok_or_else(|| anyhow!("not found filename for {}", from.display()))? }),
-            )?;
+            .and_then(|cmd| {
+                self.template
+                    .render_template(
+                        cmd,
+                        &json!({
+                            "from": from.as_ref().display().to_string(),
+                            "to": to.as_ref().display().to_string()
+                        }),
+                    )
+                    .map_err(|e| {
+                        warn!("failed to render template `{}`: {}", cmd, e);
+                    })
+                    .ok()
+            });
 
-            // before: check if exists
-            let paths = from
-                .file_stem()
-                .map(|name| word_dir.join(name))
-                .into_iter()
-                .chain(std::iter::once_with(|| {
-                    word_dir.with_file_name(self.bin.name())
-                }))
-                .collect::<Vec<_>>();
-
-            trace!("extracting to {:?} with hook: {}", paths, cmd);
-            let to = to.join(self.bin.name());
-
-            // if any exists
-            for p in &paths {
-                if afs::metadata(&p).await.is_ok() {
-                    info!(
-                        "use a existing path {} for extracting hook: {}",
-                        p.display(),
-                        cmd
-                    );
-
-                    if afs::metadata(&to).await.is_err() {
-                        trace!("moving {} to {}", p.display(), to.display());
-                        tokio::fs::rename(p, &to).await?;
-                    }
-                    return Ok(());
-                }
-            }
-
-            debug!("running hook {} in {}", cmd, word_dir.display());
-            run_cmd(&cmd, &word_dir).await?;
-
-            for p in &paths {
-                if afs::metadata(&p).await.is_ok() {
-                    debug!("moving {} to {}", p.display(), to.display());
-                    tokio::fs::rename(p, &to).await?;
-                    return Ok(());
-                }
-            }
-
-            error!(
-                "not found decompression paths {:?} for executed hook: {}",
-                paths, cmd
-            );
-            bail!(
-                "no decompression paths {:?} found after executing hook",
-                paths
-            );
-        }
-        // general extracting
-        let (from, to) = (word_dir.to_owned(), to.to_owned());
-        tokio::task::spawn_blocking(move || extract(from, to)).await??;
-
-        Ok(())
+        decompress(from, to, cmd.as_deref()).await
     }
 
     /// 下载url对应文件到缓存path
@@ -310,8 +284,11 @@ impl<'a, B: Binary> BinaryPackage<'a, B> {
             .map(ToString::to_string)
             .ok_or_else(|| anyhow!("not found filename for {}", url))?;
 
-        let cache_path = self.cache_dir.join(&filename);
-        let md5_path = self.cache_dir.join(&format!("{}.md5", filename));
+        let cache_dir = self.bin_cache_dir();
+        afs::create_dir_all(&cache_dir).await?;
+
+        let cache_path = cache_dir.join(&filename);
+        let md5_path = cache_dir.join(&format!("{}.md5", filename));
 
         // check digest
         if afs::metadata(&cache_path).await.is_ok() {
@@ -376,6 +353,7 @@ impl<'a, B: Binary> BinaryPackage<'a, B> {
             );
         }
 
+        // create a new or truncate old
         let mut file = afs::File::create(&cache_path).await?;
         let mut stream = resp.bytes_stream();
 
@@ -409,6 +387,7 @@ mod tests {
         env, fs::Permissions, iter::once, os::unix::prelude::PermissionsExt, thread, time::Duration,
     };
 
+    use futures_util::TryStreamExt;
     use once_cell::sync::Lazy;
     use reqwest::{
         header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT},
@@ -418,6 +397,7 @@ mod tests {
     use tempfile::{tempdir, TempDir};
     use tokio::{
         fs::{create_dir_all, write},
+        process::Command,
         runtime::Runtime,
     };
 
@@ -439,12 +419,21 @@ mod tests {
     static MAPPER: Lazy<Mapper> = Lazy::new(|| {
         thread::spawn(|| {
             let pool = TOKIO_RT
-                .block_on(
-                    SqlitePoolOptions::new()
+                .block_on(async {
+                    let pool = SqlitePoolOptions::new()
                         .max_connections(4)
-                        .connect("sqlite::memory:"),
-                )
+                        .connect("sqlite::memory:")
+                        .await?;
+                    let sql = read_to_string("table_sqlite.sql").await?;
+                    println!("setup sql: {}", sql);
+                    let mut rows = sqlx::query(&sql).execute_many(&pool).await;
+                    while let Some(row) = rows.try_next().await? {
+                        println!("get row: {:?}", row);
+                    }
+                    Ok::<_, Error>(pool)
+                })
                 .unwrap();
+
             Mapper { pool }
         })
         .join()
@@ -486,7 +475,7 @@ mod tests {
             .expect("build client")
     });
 
-    static HANDLEBARS: Lazy<Handlebars> = Lazy::new(|| Handlebars::new());
+    static HANDLEBARS: Lazy<Handlebars> = Lazy::new(Handlebars::new);
 
     fn create_pkg(config: BinaryConfig) -> Result<BinaryPackage<'static, GithubBinary>> {
         let bin = GithubBinary::new(BIN_CLIENT.clone(), config);
@@ -516,29 +505,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_extract_when() -> Result<()> {
+    async fn test_install() -> Result<()> {
+        let test_fn = |config| async move {
+            let ver = "v12.1.2";
+            // clear env path
+            env::set_var("PATH", &env::join_paths(once(EXE_DIR.clone()))?);
+            let pkg = create_pkg(config)?;
+
+            assert!(which(pkg.bin.name()).is_err());
+
+            pkg.install(ver).await?;
+
+            let res = which(pkg.bin.name());
+            assert!(res.is_ok());
+
+            let out = Command::new(res.unwrap()).args(&["-V"]).output().await?;
+            let s = std::str::from_utf8(&out.stdout)?;
+            debug!("output: {}", s);
+            assert!(s.contains(&ver[1..]));
+
+            Ok::<_, Error>(())
+        };
         let config = BinaryConfigBuilder::default()
             .name("XAMPPRocky/tokei")
-            // .hook(
-            //     HookBuilder::default()
-            //         .action(
-            //             HookActionBuilder::default()
-            //                 .extract("gzip -d --keep {{ filename }}")
-            //                 .build()?,
-            //         )
-            //         .build()?,
-            // )
             .build()?;
 
-        let ver = "v12.1.2";
-        let pkg = create_pkg(config)?;
-        let url = pkg.bin.get_url(ver).await?;
-        let from = pkg.download(&url).await?;
+        test_fn(config).await?;
+        Ok(())
+    }
 
-        let to = DATA_DIR.clone();
-        pkg.extract(&from, &to).await?;
+    #[tokio::test]
+    async fn test_extract() -> Result<()> {
+        let test_fn = |config| async move {
+            let ver = "v12.1.2";
+            let pkg = create_pkg(config)?;
+            let url = pkg.bin.get_url(ver).await?;
+            let from = pkg.download(&url).await?;
 
-        assert!(to.join("tokei").is_dir());
+            let to = DATA_DIR.clone();
+            pkg.extract(&from, &to).await?;
+
+            // let mut dirs = afs::read_dir(&to).await?;
+            let mut found = false;
+            while let Some(dir) = afs::read_dir(&to).await?.next_entry().await? {
+                if dir.metadata().await.map(|p| p.is_file()).unwrap_or(false)
+                    && dir
+                        .file_name()
+                        .to_str()
+                        .map(|s| s == "tokei")
+                        .unwrap_or(false)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found);
+            Ok::<_, Error>(())
+        };
+
+        let config = BinaryConfigBuilder::default()
+            .name("XAMPPRocky/tokei")
+            .build()?;
+        test_fn(config).await?;
+
+        let config = BinaryConfigBuilder::default()
+            .name("XAMPPRocky/tokei")
+            .hook(
+                HookBuilder::default()
+                    .action(
+                        HookActionBuilder::default()
+                            .extract("tar xvf {{from}} -C {{to}}")
+                            .build()?,
+                    )
+                    .build()?,
+            )
+            .build()?;
+        test_fn(config).await?;
         Ok(())
     }
 
@@ -550,7 +592,7 @@ mod tests {
                 HookBuilder::default()
                     .action(
                         HookActionBuilder::default()
-                            .extract("gzip -d --keep {{ filename }}")
+                            .extract("sh -c 'gzip -dc --keep {{ from }} > {{ to }}/clash'")
                             .build()?,
                     )
                     .build()?,

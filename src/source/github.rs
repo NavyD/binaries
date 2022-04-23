@@ -16,10 +16,7 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use super::{Binary, Version, Visible};
-use crate::{
-    source::Hook,
-    util::{get_archs, SUPPORTED_CONTENT_TYPES},
-};
+use crate::{extract::SUPPORTED_CONTENT_TYPES, source::Hook, util::get_archs};
 
 /// [Rate limiting](https://docs.github.com/en/rest/overview/resources-in-the-rest-api#rate-limiting)
 ///
