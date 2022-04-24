@@ -20,7 +20,7 @@ pub trait Visible {
     }
 }
 
-pub trait Binary: Visible + Clone {
+pub trait Binary: Visible + Clone + Send + Sync {
     fn name(&self) -> &str;
 
     fn version(&self) -> Version;

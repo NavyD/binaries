@@ -1,9 +1,11 @@
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Error;
 use anyhow::{anyhow, bail, Result};
+use async_trait::async_trait;
 use derive_builder::Builder;
 use futures_util::StreamExt;
 use getset::Getters;
@@ -47,58 +49,87 @@ use crate::{
 //         todo!()
 //     }
 // }
-// #[async_trait]
-// pub trait Package: Sync {
-//     type Bin: Binary;
+#[async_trait]
+pub trait Package<T: Binary>: Send + Sync {
+    fn bin(&self) -> &T;
 
-//     fn bin(&self) -> &Self::Bin;
+    async fn has_installed(&self) -> bool {
+        let name = self.bin().name().to_owned();
+        tokio::task::spawn_blocking(move || {
+            which(&name).map_or(false, |p| {
+                trace!("found executable bin {} in {}", name, p.display());
+                true
+            })
+        })
+        .await
+        .unwrap_or_else(|e| {
+            error!("failed spawn blocking `which` task: {}", e);
+            false
+        })
+    }
 
-//     async fn has_installed(&self) -> bool {
-//         let name = self.bin().name().to_owned();
-//         tokio::task::spawn_blocking(move || {
-//             which(&name).map_or(false, |p| {
-//                 trace!("found executable bin {} in {}", name, p.display());
-//                 true
-//             })
-//         })
-//         .await
-//         .unwrap_or_else(|e| {
-//             error!("failed spawn blocking `which` task: {}", e);
-//             false
-//         })
-//     }
+    async fn updateable_ver(&self) -> Option<(String, String)>;
 
-//     async fn updateable_ver(&self) -> Option<(String, String)>;
+    async fn install(&self, ver: &str) -> Result<()>;
 
-//     async fn install(&self, ver: &str) -> Result<()>;
+    async fn uninstall(&self) -> Result<()>;
 
-//     async fn uninstall(&self) -> Result<()>;
+    async fn update(&self) -> Result<()> {
+        if let Some((new, old)) = self.updateable_ver().await {
+            info!("updating version to {} from {}", new, old);
+            self.uninstall().await?;
+            self.install(&new).await?;
+            Ok(())
+        } else {
+            bail!("can not update")
+        }
+    }
+}
 
-//     async fn update(&self) -> Result<()> {
-//         if let Some((new, old)) = self.updateable_ver().await {
-//             info!("updating version to {} from {}", new, old);
-//             self.uninstall().await?;
-//             self.install(&new).await?;
-//             Ok(())
-//         } else {
-//             bail!("can not update")
-//         }
-//     }
-// }
-
-#[derive(Debug, Getters, Builder, Clone)]
-#[getset(get = "pub")]
-pub struct BinaryPackage<'a, B: Binary> {
+struct A<B: Binary> {
     bin: B,
-    mapper: &'a Mapper,
+    mapper: Mapper,
     client: Client,
     data_dir: PathBuf,
     cache_dir: PathBuf,
     executable_dir: PathBuf,
-    template: &'a Handlebars<'a>,
+    template: Arc<Handlebars<'static>>,
 }
 
-impl<'a, B: Binary> BinaryPackage<'a, B> {
+#[async_trait]
+impl<T: Binary> Package<T> for A<T> {
+    fn bin(&self) -> &T {
+        todo!()
+    }
+
+    async fn updateable_ver(&self) -> Option<(String, String)> {
+        todo!()
+    }
+
+    async fn install(&self, ver: &str) -> Result<()> {
+        todo!()
+    }
+
+    async fn uninstall(&self) -> Result<()> {
+        todo!()
+    }
+}
+
+#[derive(Debug, Getters, Builder, Clone)]
+#[getset(get = "pub")]
+pub struct BinaryPackage<B: Binary> {
+    bin: B,
+    mapper: Mapper,
+    client: Client,
+    data_dir: PathBuf,
+    cache_dir: PathBuf,
+    executable_dir: PathBuf,
+    template: Arc<Handlebars<'static>>,
+}
+
+unsafe impl<B: Binary> Send for BinaryPackage<B> {}
+
+impl<B: Binary> BinaryPackage<B> {
     pub async fn has_installed(&self) -> bool {
         let name = self.bin().name().to_owned();
         tokio::task::spawn_blocking(move || {
@@ -470,7 +501,7 @@ mod tests {
 
     static HANDLEBARS: Lazy<Handlebars> = Lazy::new(Handlebars::new);
 
-    fn create_pkg(config: BinaryConfig) -> Result<BinaryPackage<'static, GithubBinary>> {
+    fn create_pkg(config: BinaryConfig) -> Result<BinaryPackage<GithubBinary>> {
         let bin = GithubBinary::new(BIN_CLIENT.clone(), config);
 
         let client = ClientBuilder::new()
@@ -485,15 +516,14 @@ mod tests {
         std::fs::create_dir_all(&*CACHE_DIR)?;
         std::fs::create_dir_all(&*DATA_DIR)?;
         std::fs::create_dir_all(&*EXE_DIR)?;
-
         Ok(BinaryPackage {
             bin,
             client,
             cache_dir: CACHE_DIR.clone(),
             data_dir: DATA_DIR.clone(),
             executable_dir: EXE_DIR.clone(),
-            mapper: &MAPPER,
-            template: &HANDLEBARS,
+            mapper: MAPPER.clone(),
+            template: Arc::new(Handlebars::new()),
         })
     }
 
