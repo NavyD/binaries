@@ -31,24 +31,6 @@ use crate::{
     util::find_one_exe_with_glob,
 };
 
-// struct BinaryContext {
-//     bins: Vec<BinaryManager>,
-
-// }
-
-// impl BinaryContext {
-//     pub fn install(&self) -> Result<()> {
-//         for bin in &self.bins {
-//             if !bin.has_installed().await? {
-//                 tokio::spawn(|| async move {
-//                     bin.latest_ver().await?;
-//                     bin.install()
-//                 });
-//             }
-//         }
-//         todo!()
-//     }
-// }
 #[async_trait]
 pub trait Package<T: Binary>: Send + Sync {
     fn bin(&self) -> &T;
@@ -72,6 +54,10 @@ pub trait Package<T: Binary>: Send + Sync {
 
     async fn install(&self, ver: &str) -> Result<()>;
 
+    async fn install_latest(&self) -> Result<()> {
+        self.install(&self.bin().latest_ver().await?).await
+    }
+
     async fn uninstall(&self) -> Result<()>;
 
     async fn update(&self) -> Result<()> {
@@ -83,35 +69,6 @@ pub trait Package<T: Binary>: Send + Sync {
         } else {
             bail!("can not update")
         }
-    }
-}
-
-struct A<B: Binary> {
-    bin: B,
-    mapper: Mapper,
-    client: Client,
-    data_dir: PathBuf,
-    cache_dir: PathBuf,
-    executable_dir: PathBuf,
-    template: Arc<Handlebars<'static>>,
-}
-
-#[async_trait]
-impl<T: Binary> Package<T> for A<T> {
-    fn bin(&self) -> &T {
-        todo!()
-    }
-
-    async fn updateable_ver(&self) -> Option<(String, String)> {
-        todo!()
-    }
-
-    async fn install(&self, ver: &str) -> Result<()> {
-        todo!()
-    }
-
-    async fn uninstall(&self) -> Result<()> {
-        todo!()
     }
 }
 
@@ -127,22 +84,13 @@ pub struct BinaryPackage<B: Binary> {
     template: Arc<Handlebars<'static>>,
 }
 
-unsafe impl<B: Binary> Send for BinaryPackage<B> {}
-
-impl<B: Binary> BinaryPackage<B> {
-    pub async fn has_installed(&self) -> bool {
-        let name = self.bin().name().to_owned();
-        tokio::task::spawn_blocking(move || {
-            which(&name).map_or(false, |p| {
-                trace!("found executable bin {} in {}", name, p.display());
-                true
-            })
-        })
-        .await
-        .expect("failed spawn blocking `which` task")
+#[async_trait]
+impl<T: Binary> Package<T> for BinaryPackage<T> {
+    fn bin(&self) -> &T {
+        &self.bin
     }
 
-    pub async fn updateable_ver(&self) -> Option<(String, String)> {
+    async fn updateable_ver(&self) -> Option<(String, String)> {
         if let Version::Some(_) = self.bin.version() {
             return None;
         }
@@ -167,6 +115,28 @@ impl<B: Binary> BinaryPackage<B> {
         f().await.unwrap_or(None)
     }
 
+    async fn install(&self, ver: &str) -> Result<()> {
+        let url = self.bin.get_url(ver).await?;
+        info!("installing {} version {} for {}", self.bin.name(), ver, url);
+
+        // download
+        let download_path = self.download(&url).await?;
+        let to = self.bin_data_dir();
+        afs::create_dir_all(&to).await?;
+
+        // try use custom to extract
+        self.extract(&download_path, &to).await?;
+
+        // link to exe dir
+        self.link(&to).await?;
+
+        // inserto into db
+        let info = UpdatedInfo::with_installed(self.bin.name(), ver);
+        debug!("inserting info to db: {:?}", info);
+        self.mapper.insert(&info).await?;
+        Ok(())
+    }
+
     async fn uninstall(&self) -> Result<()> {
         let link = self.bin_link_path();
         trace!("removing link file {}", link.display());
@@ -189,29 +159,8 @@ impl<B: Binary> BinaryPackage<B> {
         // TODO: remove db
         Ok(())
     }
-
-    pub async fn install(&self, ver: &str) -> Result<()> {
-        let url = self.bin.get_url(ver).await?;
-        info!("installing {} version {} for {}", self.bin.name(), ver, url);
-
-        // download
-        let download_path = self.download(&url).await?;
-        let to = self.bin_data_dir();
-        afs::create_dir_all(&to).await?;
-
-        // try use custom to extract
-        self.extract(&download_path, &to).await?;
-
-        // link to exe dir
-        self.link(&to).await?;
-
-        // inserto into db
-        let info = UpdatedInfo::with_installed(self.bin.name(), ver);
-        debug!("inserting info to db: {:?}", info);
-        self.mapper.insert(&info).await?;
-        Ok(())
-    }
-
+}
+impl<B: Binary> BinaryPackage<B> {
     async fn link<P>(&self, to: P) -> Result<()>
     where
         P: AsRef<Path>,

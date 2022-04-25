@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, Error};
 use binaries::{
     manager::{BinaryPackage, Package},
     source::Binary,
@@ -17,6 +17,7 @@ async fn main() {
         .filter_level(log::LevelFilter::Warn)
         .filter_module(env!("CARGO_CRATE_NAME"), log::LevelFilter::Trace)
         .init();
+
 }
 
 struct Config {}
@@ -40,7 +41,10 @@ impl<P: Package<P> + 'static + Binary> BinContext<P> {
         for pkg in &self.pkgs {
             let p = pkg.clone();
             tokio::spawn(async move {
-                p.install("ver").await.unwrap();
+                if !p.has_installed().await {
+                    p.install("ver").await.unwrap();
+                }
+                Ok::<_, Error>(())
             });
         }
         todo!()

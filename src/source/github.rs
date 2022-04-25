@@ -14,7 +14,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use url::Url;
 
 use super::{Binary, Version, Visible};
-use crate::{extract::SUPPORTED_CONTENT_TYPES, source::Hook, util::get_archs};
+use crate::{extract::SUPPORTED_CONTENT_TYPES, source::Hook, util::get_archs, config};
 
 /// [Rate limiting](https://docs.github.com/en/rest/overview/resources-in-the-rest-api#rate-limiting)
 ///
@@ -72,6 +72,9 @@ impl Binary for GithubBinary {
 
 /// [Releases The releases API allows you to create, modify, and delete releases and release assets.](https://docs.github.com/en/rest/reference/releases)
 impl GithubBinary {
+    pub fn new1(client: Client, config: config::Binary) -> Result<Self> {
+        todo!()
+    }
     pub fn new(client: Client, config: BinaryConfig) -> Self {
         let base_url = config
             .owner()

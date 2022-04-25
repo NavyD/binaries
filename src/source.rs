@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use derive_builder::Builder;
 use getset::{Getters, MutGetters, Setters};

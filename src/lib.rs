@@ -1,11 +1,11 @@
 // #![allow(unused)]
 
-pub mod config;
 pub mod extract;
 pub mod manager;
 pub mod source;
 pub mod updated_info;
 pub mod util;
+pub mod config;
 
 pub static CRATE_NAME: &str = env!("CARGO_CRATE_NAME");
 

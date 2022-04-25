@@ -61,6 +61,7 @@ zip-extract = "0.1.1"
 md-5 = "0.10.1"
 infer = "0.7.0"
 handlebars = "4.2.2"
+toml = "0.5.9"
 
 [dev-dependencies]
 dotenv = "0.15.0"
