@@ -10,17 +10,17 @@ use url::Url;
 pub mod github;
 
 #[async_trait]
-pub trait Visible {
+pub trait Visible: std::fmt::Debug {
     async fn latest_ver(&self) -> Result<String>;
 
     async fn get_url(&self, ver: &str) -> Result<Url>;
 
-    async fn get_latest_url(&self) -> Result<Url> {
-        self.get_url(&self.latest_ver().await?).await
-    }
+    // async fn get_latest_url(&self) -> Result<Url> {
+    //     self.get_url(&self.latest_ver().await?).await
+    // }
 }
 
-pub trait Binary: Visible + Clone + Send + Sync {
+pub trait Binary: Visible + Send + Sync {
     fn name(&self) -> &str;
 
     fn version(&self) -> Version;

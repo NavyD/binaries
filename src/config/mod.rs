@@ -17,7 +17,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Getters, Setters, Clone, Builder, Serialize, Deserialize)]
-#[getset(get = "pub", set, get)]
+#[getset(get = "pub", set)]
 pub struct Binary {
     #[builder(default)]
     name: String,
@@ -25,7 +25,7 @@ pub struct Binary {
     #[builder(default)]
     version: Option<String>,
 
-    hook: HookAction,
+    hook: Option<HookAction>,
 
     #[builder(default)]
     pick_regex: Option<String>,
@@ -38,7 +38,7 @@ pub struct Binary {
 }
 
 #[derive(Debug, Getters, Setters, Clone, Builder, Serialize, Deserialize)]
-#[getset(get = "pub", set, get)]
+#[getset(get = "pub", set)]
 #[builder(pattern = "mutable", setter(into, strip_option))]
 pub struct HookAction {
     install: Option<String>,

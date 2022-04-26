@@ -14,17 +14,31 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use url::Url;
 
 use super::{Binary, Version, Visible};
-use crate::{extract::SUPPORTED_CONTENT_TYPES, source::Hook, util::get_archs, config};
+use crate::{config, extract::SUPPORTED_CONTENT_TYPES, source::Hook, util::get_archs};
 
 /// [Rate limiting](https://docs.github.com/en/rest/overview/resources-in-the-rest-api#rate-limiting)
 ///
 /// [Creating a token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token#creating-a-token)
-#[derive(Debug, Clone, Getters)]
+#[derive(Debug, Clone, Getters, Builder)]
 #[getset(get = "pub")]
+#[builder(setter(into))]
 pub struct GithubBinary {
-    config: BinaryConfig,
     client: Client,
+    #[builder(setter(custom))]
     base_url: Url,
+    pick_regex: Option<String>,
+    has_extract_hook: bool,
+}
+
+impl GithubBinaryBuilder {
+    pub fn url(&mut self, owner: &str, repo: &str) -> Result<&mut Self> {
+        // if name.split('/').count() != 2 {
+        //     bail!("invalid github name: {}", name)
+        // }
+        self.base_url =
+            Some(format!("https://api.github.com/repos/{}/{}/", owner, repo).parse::<url::Url>()?);
+        Ok(self)
+    }
 }
 
 #[async_trait]
@@ -44,53 +58,8 @@ impl Visible for GithubBinary {
     }
 }
 
-impl Binary for GithubBinary {
-    fn name(&self) -> &str {
-        self.config
-            .bin_name()
-            .as_deref()
-            .or_else(|| self.config.repo())
-            .expect("not found bin name")
-    }
-
-    fn version(&self) -> super::Version {
-        if let Some(v) = self.config.ver() {
-            Version::Some(v.to_owned())
-        } else {
-            Version::Latest
-        }
-    }
-
-    fn exe_glob(&self) -> Option<&str> {
-        self.config.exe_glob().as_deref()
-    }
-
-    fn hook(&self) -> Option<&Hook> {
-        self.config.hook().as_ref()
-    }
-}
-
 /// [Releases The releases API allows you to create, modify, and delete releases and release assets.](https://docs.github.com/en/rest/reference/releases)
 impl GithubBinary {
-    pub fn new1(client: Client, config: config::Binary) -> Result<Self> {
-        todo!()
-    }
-    pub fn new(client: Client, config: BinaryConfig) -> Self {
-        let base_url = config
-            .owner()
-            .zip(config.repo())
-            .map(|(owner, repo)| format!("https://api.github.com/repos/{}/{}/", owner, repo))
-            .expect("not found owner or repo")
-            .parse::<Url>()
-            .expect("url parse");
-
-        Self {
-            client,
-            config,
-            base_url,
-        }
-    }
-
     /// 从release.assets中选择一个合适的asset。
     ///
     /// 如果配置了[pick_regex][BinaryConfig::pick_regex]则使用pick_regex过滤
@@ -106,7 +75,7 @@ impl GithubBinary {
     ///
     /// * 如果未找到任何asset
     fn pick_asset<'a>(&self, rel: &'a Release) -> Result<&'a Asset> {
-        if let Some(re) = self.config.pick_regex().as_deref() {
+        if let Some(re) = self.pick_regex().as_deref() {
             let re = Regex::new(re)?;
             let res = rel
                 .assets()
@@ -138,13 +107,7 @@ impl GithubBinary {
             bail!("picked empty by name");
         }
 
-        let mut assets: Vec<_> = if let Some(cmd) = self
-            .config
-            .hook
-            .as_ref()
-            .and_then(|hook| hook.action.extract.as_deref())
-        {
-            debug!("skipped content type filter for extract hook: {}", cmd);
+        let mut assets: Vec<_> = if self.has_extract_hook {
             iter.collect()
         } else {
             // filter by content type
@@ -197,31 +160,6 @@ impl GithubBinary {
             .await?
             .to()
     }
-
-    // 获取所有release可能会达到rate limit
-    // async fn fetch_all_releases(&self) -> Result<Vec<Release>> {
-    //     let url = self.base_url().join("releases")?;
-    //     let mut releases = vec![];
-
-    //     let (mut page, per_page) = (0, 30);
-    //     loop {
-    //         page += 1;
-    //         let res = self
-    //             .client
-    //             .get(url.clone())
-    //             .header("page", page.to_string().parse::<HeaderValue>()?)
-    //             .send()
-    //             .await?
-    //             .json::<ResponseResult>()
-    //             .await?
-    //             .to::<Vec<Release>>()?;
-    //         let len = res.len();
-    //         releases.extend(res);
-    //         if len < per_page {
-    //             return Ok(releases);
-    //         }
-    //     }
-    // }
 }
 
 /// Error: data did not match any variant of untagged enum ResponseResult
@@ -439,125 +377,125 @@ impl BinaryConfig {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{fs::read_to_string, time::Duration};
+// #[cfg(test)]
+// mod tests {
+//     use std::{fs::read_to_string, time::Duration};
 
-    use log::info;
-    use once_cell::sync::Lazy;
-    use reqwest::{
-        header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT},
-        ClientBuilder,
-    };
+//     use log::info;
+//     use once_cell::sync::Lazy;
+//     use reqwest::{
+//         header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT},
+//         ClientBuilder,
+//     };
 
-    use super::*;
+//     use super::*;
 
-    static BIN: Lazy<GithubBinary> = Lazy::new(|| {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static("application/vnd.github.v3+json"),
-        );
-        // max 100
-        // headers.insert("per_page", HeaderValue::from_static("50"));
-        // headers.insert("page", HeaderValue::from_static("1"));
-        let name = "Authorization";
-        if let Ok(val) = std::env::var(name) {
-            info!("loaded token {}={} for github rate limit", name, val);
-            headers.insert(name, HeaderValue::from_str(&val).unwrap());
-        }
-        headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Safari/537.36"));
+//     static BIN: Lazy<GithubBinary> = Lazy::new(|| {
+//         let mut headers = HeaderMap::new();
+//         headers.insert(
+//             ACCEPT,
+//             HeaderValue::from_static("application/vnd.github.v3+json"),
+//         );
+//         // max 100
+//         // headers.insert("per_page", HeaderValue::from_static("50"));
+//         // headers.insert("page", HeaderValue::from_static("1"));
+//         let name = "Authorization";
+//         if let Ok(val) = std::env::var(name) {
+//             info!("loaded token {}={} for github rate limit", name, val);
+//             headers.insert(name, HeaderValue::from_str(&val).unwrap());
+//         }
+//         headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Safari/537.36"));
 
-        let client = ClientBuilder::new()
-            .timeout(Duration::from_secs(5))
-            .default_headers(headers)
-            .build()
-            .expect("build client");
-        let config = BinaryConfigBuilder::default()
-            .name("Dreamacro/clash")
-            .build()
-            .expect("building bin config");
+//         let client = ClientBuilder::new()
+//             .timeout(Duration::from_secs(5))
+//             .default_headers(headers)
+//             .build()
+//             .expect("build client");
+//         let config = BinaryConfigBuilder::default()
+//             .name("Dreamacro/clash")
+//             .build()
+//             .expect("building bin config");
 
-        GithubBinary::new(client, config)
-    });
+//         GithubBinary::new(client, config)
+//     });
 
-    #[tokio::test]
-    async fn test_fetch_latest_release() -> Result<()> {
-        let bin = BIN.clone();
-        let release = bin.fetch_latest_release().await?;
+//     #[tokio::test]
+//     async fn test_fetch_latest_release() -> Result<()> {
+//         let bin = BIN.clone();
+//         let release = bin.fetch_latest_release().await?;
 
-        // latest at 22/4/17
-        assert!(release.version() >= "v1.10.0");
-        assert!(!release.prerelease);
-        assert!(release.created_at >= "2022-03-19T05:58:51Z".parse::<DateTime<Utc>>()?);
-        Ok(())
-    }
+//         // latest at 22/4/17
+//         assert!(release.version() >= "v1.10.0");
+//         assert!(!release.prerelease);
+//         assert!(release.created_at >= "2022-03-19T05:58:51Z".parse::<DateTime<Utc>>()?);
+//         Ok(())
+//     }
 
-    #[tokio::test]
-    async fn test_fetch_release_by_tag_name() -> Result<()> {
-        let bin = BIN.clone();
-        let tag = "v1.10.0";
-        let rel = bin.fetch_release_by_tag_name(tag).await?;
-        assert_eq!(rel.version(), tag);
-        assert_eq!(rel.tag_name, tag);
+//     #[tokio::test]
+//     async fn test_fetch_release_by_tag_name() -> Result<()> {
+//         let bin = BIN.clone();
+//         let tag = "v1.10.0";
+//         let rel = bin.fetch_release_by_tag_name(tag).await?;
+//         assert_eq!(rel.version(), tag);
+//         assert_eq!(rel.tag_name, tag);
 
-        let res = bin.fetch_release_by_tag_name("_not_found__tag__").await;
-        assert!(res.is_err());
-        assert_eq!(
-            res.map_err(|e| e.to_string().contains("Not Found")),
-            Err(true)
-        );
-        Ok(())
-    }
+//         let res = bin.fetch_release_by_tag_name("_not_found__tag__").await;
+//         assert!(res.is_err());
+//         assert_eq!(
+//             res.map_err(|e| e.to_string().contains("Not Found")),
+//             Err(true)
+//         );
+//         Ok(())
+//     }
 
-    #[tokio::test]
-    async fn test_choosen_one() -> Result<()> {
-        Ok(())
-    }
+//     #[tokio::test]
+//     async fn test_choosen_one() -> Result<()> {
+//         Ok(())
+//     }
 
-    #[test]
-    fn test_serde_reponse_result() -> Result<()> {
-        let rate_limit = r#"{
-  "message": "Not Found",
-  "documentation_url": "https://docs.github.com/rest"
-}"#;
-        let res: ResponseResult = serde_json::from_str(rate_limit)?;
-        assert_eq!(
-            res,
-            ResponseResult::Failed {
-                message: "Not Found".to_owned(),
-                documentation_url: "https://docs.github.com/rest".to_owned()
-            }
-        );
+//     #[test]
+//     fn test_serde_reponse_result() -> Result<()> {
+//         let rate_limit = r#"{
+//   "message": "Not Found",
+//   "documentation_url": "https://docs.github.com/rest"
+// }"#;
+//         let res: ResponseResult = serde_json::from_str(rate_limit)?;
+//         assert_eq!(
+//             res,
+//             ResponseResult::Failed {
+//                 message: "Not Found".to_owned(),
+//                 documentation_url: "https://docs.github.com/rest".to_owned()
+//             }
+//         );
 
-        let _res: Release = serde_json::from_str::<ResponseResult>(&read_to_string(
-            "tests/clash_latest_release.json",
-        )?)?
-        .to()?;
+//         let _res: Release = serde_json::from_str::<ResponseResult>(&read_to_string(
+//             "tests/clash_latest_release.json",
+//         )?)?
+//         .to()?;
 
-        let _res: Vec<Release> =
-            serde_json::from_str::<ResponseResult>(&read_to_string("tests/clash_releases.json")?)?
-                .to()?;
-        Ok(())
-    }
+//         let _res: Vec<Release> =
+//             serde_json::from_str::<ResponseResult>(&read_to_string("tests/clash_releases.json")?)?
+//                 .to()?;
+//         Ok(())
+//     }
 
-    #[test]
-    fn test_pick() -> Result<()> {
-        let conditions = &[
-            vec![BIN.name().to_string()],
-            vec!["linux".to_string()],
-            get_archs(),
-        ];
-        let rel: Release = serde_json::from_str::<ResponseResult>(&read_to_string(
-            "tests/clash_latest_release.json",
-        )?)?
-        .to()?;
-        let res = pick_by_name(rel.assets().iter(), conditions)?;
-        assert_eq!(res.clone().count(), 2);
+//     #[test]
+//     fn test_pick() -> Result<()> {
+//         let conditions = &[
+//             vec![BIN.name().to_string()],
+//             vec!["linux".to_string()],
+//             get_archs(),
+//         ];
+//         let rel: Release = serde_json::from_str::<ResponseResult>(&read_to_string(
+//             "tests/clash_latest_release.json",
+//         )?)?
+//         .to()?;
+//         let res = pick_by_name(rel.assets().iter(), conditions)?;
+//         assert_eq!(res.clone().count(), 2);
 
-        let conditions = &[vec![BIN.name().to_string()], vec!["linux".to_string()]];
-        let res = pick_by_name(rel.assets().iter(), conditions)?;
-        assert_eq!(res.clone().count(), 13);
-        Ok(())
-    }
-}
+//         let conditions = &[vec![BIN.name().to_string()], vec!["linux".to_string()]];
+//         let res = pick_by_name(rel.assets().iter(), conditions)?;
+//         assert_eq!(res.clone().count(), 13);
+//         Ok(())
+//     }
+// }
