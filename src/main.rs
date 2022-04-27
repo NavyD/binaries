@@ -1,11 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Result, Error};
-use binaries::{
-    manager::{BinaryPackage, Package},
-    source::Binary,
-    updated_info::Mapper,
-};
+use anyhow::{Error, Result};
 use directories::{BaseDirs, ProjectDirs};
 use handlebars::Handlebars;
 use reqwest::Client;
@@ -17,36 +12,4 @@ async fn main() {
         .filter_level(log::LevelFilter::Warn)
         .filter_module(env!("CARGO_CRATE_NAME"), log::LevelFilter::Trace)
         .init();
-
-}
-
-struct Config {}
-
-struct BinContext<P: Package<P> + Binary> {
-    pkgs: Vec<Arc<P>>,
-    template: Handlebars<'static>,
-    project_dirs: ProjectDirs,
-    base_dirs: BaseDirs,
-    pkg_client: Client,
-    mapper: Mapper,
-    config: Config,
-}
-
-impl<P: Package<P> + 'static + Binary> BinContext<P> {
-    fn new(config: Config) -> Result<Self> {
-        todo!()
-    }
-
-    async fn install(&self) -> Result<()> {
-        for pkg in &self.pkgs {
-            let p = pkg.clone();
-            tokio::spawn(async move {
-                if !p.has_installed().await {
-                    p.install("ver").await.unwrap();
-                }
-                Ok::<_, Error>(())
-            });
-        }
-        todo!()
-    }
 }

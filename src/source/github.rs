@@ -13,8 +13,9 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use url::Url;
 
-use super::{Binary, Version, Visible};
-use crate::{config, extract::SUPPORTED_CONTENT_TYPES, source::Hook, util::get_archs};
+use crate::{config, extract::SUPPORTED_CONTENT_TYPES, util::get_archs};
+
+use super::Visible;
 
 /// [Rate limiting](https://docs.github.com/en/rest/overview/resources-in-the-rest-api#rate-limiting)
 ///
@@ -32,9 +33,6 @@ pub struct GithubBinary {
 
 impl GithubBinaryBuilder {
     pub fn url(&mut self, owner: &str, repo: &str) -> Result<&mut Self> {
-        // if name.split('/').count() != 2 {
-        //     bail!("invalid github name: {}", name)
-        // }
         self.base_url =
             Some(format!("https://api.github.com/repos/{}/{}/", owner, repo).parse::<url::Url>()?);
         Ok(self)
@@ -152,6 +150,7 @@ impl GithubBinary {
     /// [Get a release by tag name](https://docs.github.com/en/rest/reference/releases#get-a-release-by-tag-name)
     async fn fetch_release_by_tag_name(&self, tag: &str) -> Result<Release> {
         let url = self.base_url.join(&format!("releases/tags/{}", tag))?;
+        trace!("fetching release with tag name `{}` for url: {}", tag, url);
         self.client
             .get(url)
             .send()
@@ -339,42 +338,6 @@ pub struct Asset {
 
     #[serde(rename = "browser_download_url")]
     browser_download_url: String,
-}
-
-#[derive(Debug, Getters, Setters, Clone, Builder, Serialize, Deserialize)]
-#[getset(get = "pub", set, get)]
-#[builder(pattern = "mutable", setter(into, strip_option))]
-pub struct BinaryConfig {
-    name: String,
-
-    #[builder(default)]
-    bin_name: Option<String>,
-
-    #[builder(default)]
-    path: Option<PathBuf>,
-
-    #[builder(default)]
-    ver: Option<String>,
-
-    #[builder(default)]
-    hook: Option<Hook>,
-
-    #[builder(default)]
-    pick_regex: Option<String>,
-
-    /// a glob of executable file in zip. for help to comfirm exe bin
-    #[builder(default)]
-    exe_glob: Option<String>,
-}
-
-impl BinaryConfig {
-    pub fn owner(&self) -> Option<&str> {
-        self.name.split('/').next()
-    }
-
-    pub fn repo(&self) -> Option<&str> {
-        self.name.split('/').last()
-    }
 }
 
 // #[cfg(test)]

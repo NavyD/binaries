@@ -3,6 +3,7 @@ use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Error;
 use anyhow::{anyhow, bail, Result};
@@ -19,15 +20,17 @@ use log::log_enabled;
 use log::{debug, error, info, trace, warn};
 use md5::{Digest, Md5};
 use once_cell::sync::Lazy;
+use reqwest::header;
+use reqwest::header::HeaderMap;
 use reqwest::Client;
 use reqwest::ClientBuilder;
 use serde_json::json;
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::Pool;
+use sqlx::Sqlite;
 use tokio::fs::read_to_string;
 use tokio::fs::remove_file;
-use tokio::{
-    fs::{self as afs},
-    io::AsyncWriteExt,
-};
+use tokio::{fs as afs, io::AsyncWriteExt};
 use url::Url;
 use which::which;
 
@@ -36,7 +39,7 @@ use crate::config::Config;
 use crate::config::Source;
 use crate::source::github::GithubBinaryBuilder;
 use crate::source::Visible;
-use crate::source::{Binary, Version};
+use crate::CRATE_NAME;
 use crate::{
     extract::decompress,
     updated_info::{Mapper, UpdatedInfo},
@@ -53,14 +56,43 @@ pub struct PackageManager {
     base_dirs: BaseDirs,
 }
 
+fn build_client() -> Result<Client> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::ACCEPT,
+        header::HeaderValue::from_static("application/vnd.github.v3+json"),
+    );
+    let name = "Authorization";
+    if let Ok(val) = std::env::var(name) {
+        info!("loaded token {} for github rate limit", name);
+        headers.insert(name, header::HeaderValue::from_str(&val)?);
+    }
+    headers.insert(header::USER_AGENT, header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Safari/537.36"));
+
+    ClientBuilder::new()
+        .default_headers(headers)
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(Into::into)
+}
+
+async fn build_mapper(p: impl AsRef<Path>) -> Result<Mapper> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections((num_cpus::get() + 2) as u32)
+        .connect(&format!("sqlite:{}", p.as_ref().display()))
+        .await?;
+    Ok(Mapper { pool })
+}
+
 impl PackageManager {
     pub async fn new(config: Config) -> Result<Self> {
-        let client = ClientBuilder::new().build()?;
-        let mapper = Mapper { pool: todo!() };
-
-        let project_dirs = ProjectDirs::from("xyz", "navyd", "binaries")
+        let project_dirs = ProjectDirs::from("xyz", "navyd", CRATE_NAME)
             .ok_or_else(|| anyhow!("no project dirs"))?;
         let base_dirs = BaseDirs::new().ok_or_else(|| anyhow!("no base dirs"))?;
+
+        let client = build_client()?;
+        let mapper =
+            build_mapper(project_dirs.data_dir().join(&format!("{}.db", CRATE_NAME))).await?;
 
         let build_fn = |bin| {
             let (data_dir, cache_dir, executable_dir) = (
@@ -89,7 +121,7 @@ impl PackageManager {
 
         let bin_pkgs: Vec<_> =
             try_join_all(config.bins().iter().map(Clone::clone).map(build_fn)).await?;
-
+        trace!("got {} bin packages", bin_pkgs.len());
         Ok(Self {
             base_dirs,
             bin_pkgs,
@@ -104,6 +136,7 @@ impl PackageManager {
             if !pkg.has_installed().await {
                 pkg.install(Some(&*TEMPLATE)).await
             } else {
+                info!("installed bin {} is skipped", pkg.bin.name());
                 Ok::<_, Error>(())
             }
         };
@@ -114,8 +147,12 @@ impl PackageManager {
             .map(Clone::clone)
             .map(task)
             .collect::<Vec<_>>();
-
-        let jobs = join_all(jobs).await as Vec<Result<_>>;
+        debug!("waiting for install {} jobs", jobs.len());
+        for job in join_all(jobs).await as Vec<Result<_>> {
+            if let Err(e) = job {
+                warn!("failed to install: {}", e);
+            }
+        }
         Ok(())
     }
 }
@@ -168,6 +205,13 @@ impl BinaryPackageBuilder {
 
         if afs::metadata(&pkg.link_path).await.is_ok() {
             bail!("link file has exists: {}", pkg.link_path.display());
+        } else {
+            afs::create_dir_all(
+                &pkg.link_path
+                    .parent()
+                    .ok_or_else(|| anyhow!("no parent for {}", pkg.link_path.display()))?,
+            )
+            .await?;
         }
         afs::create_dir_all(&pkg.data_dir).await?;
         afs::create_dir_all(&pkg.cache_dir).await?;
@@ -420,271 +464,288 @@ impl BinaryPackage {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use std::{
-//         env, fs::Permissions, iter::once, os::unix::prelude::PermissionsExt, thread, time::Duration,
-//     };
+#[cfg(test)]
+mod tests {
+    use std::{
+        env, fs::Permissions, iter::once, os::unix::prelude::PermissionsExt, thread, time::Duration,
+    };
 
-//     use futures_util::TryStreamExt;
-//     use once_cell::sync::Lazy;
-//     use reqwest::{
-//         header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT},
-//         ClientBuilder,
-//     };
-//     use sqlx::sqlite::SqlitePoolOptions;
-//     use tempfile::{tempdir, TempDir};
-//     use tokio::{
-//         fs::{create_dir_all, write},
-//         process::Command,
-//         runtime::Runtime,
-//     };
+    use futures_util::TryStreamExt;
+    use once_cell::sync::Lazy;
+    use reqwest::{
+        header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT},
+        ClientBuilder,
+    };
+    use sqlx::sqlite::SqlitePoolOptions;
+    use tempfile::{tempdir, TempDir};
+    use tokio::{
+        fs::{create_dir_all, write},
+        process::Command,
+        runtime::Runtime,
+    };
 
-//     use crate::source::github::{BinaryConfig, GithubBinary};
-//     use crate::source::{github::BinaryConfigBuilder, HookActionBuilder, HookBuilder, Visible};
+    use crate::config::HookActionBuilder;
 
-//     use super::*;
+    use super::*;
 
-//     pub static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
-//         tokio::runtime::Builder::new_multi_thread()
-//             .enable_all()
-//             .build()
-//             .unwrap()
-//     });
+    pub static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    });
 
-//     static MAPPER: Lazy<Mapper> = Lazy::new(|| {
-//         thread::spawn(|| {
-//             let pool = TOKIO_RT
-//                 .block_on(async {
-//                     let pool = SqlitePoolOptions::new()
-//                         .max_connections(4)
-//                         .connect("sqlite::memory:")
-//                         .await?;
-//                     let sql = read_to_string("table_sqlite.sql").await?;
-//                     println!("setup sql: {}", sql);
-//                     let mut rows = sqlx::query(&sql).execute_many(&pool).await;
-//                     while let Some(row) = rows.try_next().await? {
-//                         println!("get row: {:?}", row);
-//                     }
-//                     Ok::<_, Error>(pool)
-//                 })
-//                 .unwrap();
+    static MAPPER: Lazy<Mapper> = Lazy::new(|| {
+        thread::spawn(|| {
+            let pool = TOKIO_RT
+                .block_on(async {
+                    let pool = SqlitePoolOptions::new()
+                        .max_connections(4)
+                        .connect("sqlite::memory:")
+                        .await?;
+                    let sql = read_to_string("table_sqlite.sql").await?;
+                    println!("setup sql");
+                    let mut rows = sqlx::query(&sql).execute_many(&pool).await;
+                    while let Some(row) = rows.try_next().await? {
+                        println!("get row: {:?}", row);
+                    }
+                    Ok::<_, Error>(pool)
+                })
+                .unwrap();
 
-//             Mapper { pool }
-//         })
-//         .join()
-//         .unwrap()
-//     });
+            Mapper { pool }
+        })
+        .join()
+        .unwrap()
+    });
 
-//     static TEMP: Lazy<TempDir> = Lazy::new(|| tempdir().unwrap());
+    static TEMP: Lazy<TempDir> = Lazy::new(|| tempdir().unwrap());
 
-//     static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| TEMP.path().join("cache_dir"));
-//     static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| TEMP.path().join("data_dir"));
-//     static EXE_DIR: Lazy<PathBuf> = Lazy::new(|| TEMP.path().join("exe_dir"));
+    static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| TEMP.path().join("cache_dir"));
+    static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| TEMP.path().join("data_dir"));
+    static EXE_DIR: Lazy<PathBuf> = Lazy::new(|| TEMP.path().join("exe_dir"));
 
-//     static PKG: Lazy<BinaryPackage<GithubBinary>> = Lazy::new(|| {
-//         let bin = BinaryConfigBuilder::default()
-//             .name("Dreamacro/clash")
-//             .build()
-//             .expect("building bin config");
-//         create_pkg(bin).unwrap()
-//     });
+    static PKG: Lazy<BinaryPackage> = Lazy::new(|| {
+        let bin = config::BinaryBuilder::default()
+            .source(Source::Github {
+                owner: "Dreamacro".to_owned(),
+                repo: "clash".to_owned(),
+            })
+            .build()
+            .unwrap();
+        create_pkg(bin).unwrap()
+    });
 
-//     static BIN_CLIENT: Lazy<Client> = Lazy::new(|| {
-//         let mut headers = HeaderMap::new();
-//         headers.insert(
-//             ACCEPT,
-//             HeaderValue::from_static("application/vnd.github.v3+json"),
-//         );
+    static BIN_CLIENT: Lazy<Client> = Lazy::new(|| {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/vnd.github.v3+json"),
+        );
 
-//         let name = "Authorization";
-//         if let Ok(val) = std::env::var(name) {
-//             info!("loaded token {}={} for github rate limit", name, val);
-//             headers.insert(name, HeaderValue::from_str(&val).unwrap());
-//         }
-//         headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Safari/537.36"));
+        let name = "Authorization";
+        if let Ok(val) = std::env::var(name) {
+            info!("loaded token {}={} for github rate limit", name, val);
+            headers.insert(name, HeaderValue::from_str(&val).unwrap());
+        }
+        headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Safari/537.36"));
 
-//         ClientBuilder::new()
-//             .timeout(Duration::from_secs(5))
-//             .default_headers(headers)
-//             .build()
-//             .expect("build client")
-//     });
+        ClientBuilder::new()
+            .timeout(Duration::from_secs(10))
+            .default_headers(headers)
+            .build()
+            .expect("build client")
+    });
 
-//     static HANDLEBARS: Lazy<Handlebars> = Lazy::new(Handlebars::new);
+    static HANDLEBARS: Lazy<Handlebars> = Lazy::new(Handlebars::new);
 
-//     fn create_pkg(config: BinaryConfig) -> Result<BinaryPackage<GithubBinary>> {
-//         let bin = GithubBinary::new(BIN_CLIENT.clone(), config);
+    fn create_pkg(bin: config::Binary) -> Result<BinaryPackage> {
+        let client = BIN_CLIENT.clone();
 
-//         let client = ClientBuilder::new()
-//             .timeout(Duration::from_secs(10))
-//             .build()?;
+        let new_path = env::join_paths(
+            env::split_paths(&env::var("PATH").unwrap()).chain(once(EXE_DIR.clone())),
+        )?;
+        env::set_var("PATH", &new_path);
 
-//         let new_path = env::join_paths(
-//             env::split_paths(&env::var("PATH").unwrap()).chain(once(EXE_DIR.clone())),
-//         )?;
-//         env::set_var("PATH", &new_path);
+        let f = || {
+            let data_dir = DATA_DIR.to_owned();
+            let exe_dir = EXE_DIR.to_owned();
+            let cache_dir = CACHE_DIR.to_owned();
+            let mapper = MAPPER.clone();
+            async move {
+                BinaryPackageBuilder::default()
+                    .bin(bin)
+                    .data_dir(data_dir)
+                    .link_path(exe_dir)
+                    .cache_dir(cache_dir)
+                    .client(client)
+                    .mapper(mapper)
+                    .build()
+                    .await
+            }
+        };
+        let bin_pkg = thread::spawn(|| TOKIO_RT.block_on(f())).join().unwrap()?;
+        Ok(bin_pkg)
+    }
 
-//         std::fs::create_dir_all(&*CACHE_DIR)?;
-//         std::fs::create_dir_all(&*DATA_DIR)?;
-//         std::fs::create_dir_all(&*EXE_DIR)?;
-//         Ok(BinaryPackage {
-//             bin,
-//             client,
-//             cache_dir: CACHE_DIR.clone(),
-//             data_dir: DATA_DIR.clone(),
-//             executable_dir: EXE_DIR.clone(),
-//             mapper: MAPPER.clone(),
-//             template: Arc::new(Handlebars::new()),
-//         })
-//     }
+    #[tokio::test]
+    async fn test_install() -> Result<()> {
+        let test_fn = |config| async move {
+            let ver = "v12.1.2";
+            // clear env path
+            env::set_var("PATH", &env::join_paths(once(EXE_DIR.clone()))?);
+            let pkg = create_pkg(config)?;
 
-//     #[tokio::test]
-//     async fn test_install() -> Result<()> {
-//         let test_fn = |config| async move {
-//             let ver = "v12.1.2";
-//             // clear env path
-//             env::set_var("PATH", &env::join_paths(once(EXE_DIR.clone()))?);
-//             let pkg = create_pkg(config)?;
+            assert!(which(pkg.bin.name()).is_err());
 
-//             assert!(which(pkg.bin.name()).is_err());
+            pkg.install(Some(&*HANDLEBARS)).await?;
 
-//             pkg.install(ver).await?;
+            let res = which(pkg.bin.name());
+            assert!(res.is_ok());
 
-//             let res = which(pkg.bin.name());
-//             assert!(res.is_ok());
+            let out = Command::new(res.unwrap()).args(&["-V"]).output().await?;
+            let s = std::str::from_utf8(&out.stdout)?;
+            debug!("output: {}", s);
+            assert!(s.contains(&ver[1..]));
 
-//             let out = Command::new(res.unwrap()).args(&["-V"]).output().await?;
-//             let s = std::str::from_utf8(&out.stdout)?;
-//             debug!("output: {}", s);
-//             assert!(s.contains(&ver[1..]));
+            Ok::<_, Error>(())
+        };
+        let config = config::BinaryBuilder::default()
+            .source(Source::Github {
+                owner: "XAMPPRocky".to_owned(),
+                repo: "tokei".to_owned(),
+            })
+            .build()?;
 
-//             Ok::<_, Error>(())
-//         };
-//         let config = BinaryConfigBuilder::default()
-//             .name("XAMPPRocky/tokei")
-//             .build()?;
+        test_fn(config).await?;
+        Ok(())
+    }
 
-//         test_fn(config).await?;
-//         Ok(())
-//     }
+    #[tokio::test]
+    async fn test_extract() -> Result<()> {
+        let test_fn = |config| async move {
+            let ver = "v12.1.2";
+            let pkg = create_pkg(config)?;
+            let url = pkg.visible.get_url(ver).await?;
+            let from = pkg.download(&url).await?;
 
-//     #[tokio::test]
-//     async fn test_extract() -> Result<()> {
-//         let test_fn = |config| async move {
-//             let ver = "v12.1.2";
-//             let pkg = create_pkg(config)?;
-//             let url = pkg.bin.get_url(ver).await?;
-//             let from = pkg.download(&url).await?;
+            let to = &pkg.data_dir;
+            pkg.extract(&from, to, Some(&*HANDLEBARS)).await?;
 
-//             let to = DATA_DIR.clone();
-//             pkg.extract(&from, &to).await?;
+            // let mut dirs = afs::read_dir(&to).await?;
+            let mut found = false;
+            while let Some(dir) = afs::read_dir(&to).await?.next_entry().await? {
+                if dir.metadata().await.map(|p| p.is_file()).unwrap_or(false)
+                    && dir
+                        .file_name()
+                        .to_str()
+                        .map(|s| s == "tokei")
+                        .unwrap_or(false)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found);
+            Ok::<_, Error>(())
+        };
 
-//             // let mut dirs = afs::read_dir(&to).await?;
-//             let mut found = false;
-//             while let Some(dir) = afs::read_dir(&to).await?.next_entry().await? {
-//                 if dir.metadata().await.map(|p| p.is_file()).unwrap_or(false)
-//                     && dir
-//                         .file_name()
-//                         .to_str()
-//                         .map(|s| s == "tokei")
-//                         .unwrap_or(false)
-//                 {
-//                     found = true;
-//                     break;
-//                 }
-//             }
-//             assert!(found);
-//             Ok::<_, Error>(())
-//         };
+        let config = config::BinaryBuilder::default()
+            .source(Source::Github {
+                owner: "XAMPPRocky".to_owned(),
+                repo: "tokei".to_owned(),
+            })
+            .build()?;
+        test_fn(config).await?;
 
-//         let config = BinaryConfigBuilder::default()
-//             .name("XAMPPRocky/tokei")
-//             .build()?;
-//         test_fn(config).await?;
+        let config = config::BinaryBuilder::default()
+            .source(Source::Github {
+                owner: "XAMPPRocky".to_owned(),
+                repo: "tokei".to_owned(),
+            })
+            .hook(
+                HookActionBuilder::default()
+                    .extract("tar xvf {{from}} -C {{to}}")
+                    .build()?,
+            )
+            .build()?;
+        test_fn(config).await?;
+        Ok(())
+    }
 
-//         let config = BinaryConfigBuilder::default()
-//             .name("XAMPPRocky/tokei")
-//             .hook(
-//                 HookBuilder::default()
-//                     .action(
-//                         HookActionBuilder::default()
-//                             .extract("tar xvf {{from}} -C {{to}}")
-//                             .build()?,
-//                     )
-//                     .build()?,
-//             )
-//             .build()?;
-//         test_fn(config).await?;
-//         Ok(())
-//     }
+    #[tokio::test]
+    async fn test_extract_when_hook() -> Result<()> {
+        let config = config::BinaryBuilder::default()
+            .source(Source::Github {
+                owner: "Dreamacro".to_owned(),
+                repo: "clash".to_owned(),
+            })
+            .hook(
+                HookActionBuilder::default()
+                    .extract("sh -c 'gzip -dc --keep {{ from }} > {{ to }}/clash'")
+                    .build()?,
+            )
+            .build()?;
 
-//     #[tokio::test]
-//     async fn test_extract_when_hook() -> Result<()> {
-//         let config = BinaryConfigBuilder::default()
-//             .name("Dreamacro/clash")
-//             .hook(
-//                 HookBuilder::default()
-//                     .action(
-//                         HookActionBuilder::default()
-//                             .extract("sh -c 'gzip -dc --keep {{ from }} > {{ to }}/clash'")
-//                             .build()?,
-//                     )
-//                     .build()?,
-//             )
-//             .build()?;
+        let ver = "v1.10.0";
+        let pkg = create_pkg(config)?;
+        let url = pkg.visible.get_url(ver).await?;
+        let from = pkg.download(&url).await?;
 
-//         let ver = "v1.10.0";
-//         let pkg = create_pkg(config)?;
-//         let url = pkg.bin.get_url(ver).await?;
-//         let from = pkg.download(&url).await?;
+        pkg.extract(&from, &pkg.data_dir, Some(&*HANDLEBARS))
+            .await?;
 
-//         let to = DATA_DIR.clone();
-//         pkg.extract(&from, &to).await?;
+        assert!(pkg.data_dir.join("clash").is_file());
+        Ok(())
+    }
 
-//         assert!(to.join("clash").is_file());
-//         Ok(())
-//     }
+    #[tokio::test]
+    async fn test_download() -> Result<()> {
+        let bin = config::BinaryBuilder::default()
+            .source(Source::Github {
+                owner: "Dreamacro".to_owned(),
+                repo: "clash".to_owned(),
+            })
+            .build()?;
 
-//     #[tokio::test]
-//     async fn test_download() -> Result<()> {
-//         let ver = "v1.10.0";
-//         let url = PKG.bin.get_url(ver).await?;
-//         let path = PKG.download(&url).await?;
+        let ver = "v1.10.0";
+        let pkg = create_pkg(bin).expect("test error");
+        let url = pkg.visible.get_url(ver).await?;
+        let path = pkg.download(&url).await?;
 
-//         assert!(path.is_file());
-//         assert_eq!(
-//             path.file_name().and_then(|p| p.to_str()),
-//             url.path_segments().and_then(|p| p.last())
-//         );
+        assert!(path.is_file());
+        assert_eq!(
+            path.file_name().and_then(|p| p.to_str()),
+            url.path_segments().and_then(|p| p.last())
+        );
 
-//         let _ = PKG.download(&url).await?;
-//         Ok(())
-//     }
+        let _ = PKG.download(&url).await?;
+        Ok(())
+    }
 
-//     #[tokio::test]
-//     async fn test_exe_path() -> Result<()> {
-//         let bin_name = "bin_exe";
-//         assert!(which(bin_name).is_err());
+    #[tokio::test]
+    async fn test_exe_path() -> Result<()> {
+        let bin_name = "bin_exe";
+        assert!(which(bin_name).is_err());
 
-//         let exe_path = TEMP.path().join("exe");
-//         create_dir_all(&exe_path).await?;
+        let exe_path = TEMP.path().join("exe");
+        create_dir_all(&exe_path).await?;
 
-//         let exe_file = exe_path.join(bin_name);
-//         let content = r#"
-// #!/bin/sh
-// echo 'hello'"#;
-//         write(&exe_file, content).await?;
+        let exe_file = exe_path.join(bin_name);
+        let content = r#"
+#!/bin/sh
+echo 'hello'"#;
+        write(&exe_file, content).await?;
 
-//         afs::set_permissions(&exe_file, Permissions::from_mode(0o770)).await?;
+        afs::set_permissions(&exe_file, Permissions::from_mode(0o770)).await?;
 
-//         let path = env::var("PATH")?;
-//         let mut paths = env::split_paths(&path).collect::<Vec<_>>();
-//         paths.push(exe_path);
-//         let new_path = env::join_paths(paths)?;
-//         env::set_var("PATH", &new_path);
+        let path = env::var("PATH")?;
+        let mut paths = env::split_paths(&path).collect::<Vec<_>>();
+        paths.push(exe_path);
+        let new_path = env::join_paths(paths)?;
+        env::set_var("PATH", &new_path);
 
-//         assert_eq!(which(bin_name), Ok(exe_file));
-//         Ok(())
-//     }
-// }
+        assert_eq!(which(bin_name), Ok(exe_file));
+        Ok(())
+    }
+}

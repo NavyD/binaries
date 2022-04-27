@@ -19,39 +19,3 @@ pub trait Visible: std::fmt::Debug + Send + Sync {
     //     self.get_url(&self.latest_ver().await?).await
     // }
 }
-
-pub trait Binary: Visible + Send + Sync {
-    fn name(&self) -> &str;
-
-    fn version(&self) -> Version;
-
-    fn exe_glob(&self) -> Option<&str>;
-
-    fn hook(&self) -> Option<&Hook>;
-}
-
-pub enum Version {
-    Latest,
-    Some(String),
-}
-
-#[derive(Debug, Getters, Builder, Setters, Clone, Serialize, Deserialize)]
-#[getset(get = "pub")]
-#[builder(pattern = "mutable", setter(into, strip_option))]
-pub struct Hook {
-    #[builder(default)]
-    work_dir: Option<PathBuf>,
-    action: HookAction,
-}
-
-#[derive(Debug, Getters, Builder, MutGetters, Clone, Serialize, Deserialize)]
-#[getset(get = "pub", get_mut = "pub")]
-#[builder(pattern = "mutable", setter(into, strip_option))]
-pub struct HookAction {
-    #[builder(default)]
-    install: Option<String>,
-    #[builder(default)]
-    update: Option<String>,
-    #[builder(default)]
-    extract: Option<String>,
-}
