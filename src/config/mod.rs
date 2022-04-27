@@ -10,7 +10,7 @@ use getset::{Getters, Setters};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Getters, Setters, Clone, Builder, Serialize, Deserialize)]
-#[getset(get = "pub", set, get)]
+#[getset(get = "pub")]
 #[builder(pattern = "mutable", setter(into, strip_option))]
 pub struct Config {
     bins: Vec<Binary>,

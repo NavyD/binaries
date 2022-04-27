@@ -10,6 +10,8 @@ use async_trait::async_trait;
 use derive_builder::Builder;
 use directories::BaseDirs;
 use directories::ProjectDirs;
+use futures_util::future::join_all;
+use futures_util::future::try_join_all;
 use futures_util::StreamExt;
 use getset::Getters;
 use handlebars::Handlebars;
@@ -18,6 +20,7 @@ use log::{debug, error, info, trace, warn};
 use md5::{Digest, Md5};
 use once_cell::sync::Lazy;
 use reqwest::Client;
+use reqwest::ClientBuilder;
 use serde_json::json;
 use tokio::fs::read_to_string;
 use tokio::fs::remove_file;
@@ -51,22 +54,69 @@ pub struct PackageManager {
 }
 
 impl PackageManager {
-    pub fn new(config: Config) -> Result<Self> {
-        todo!()
+    pub async fn new(config: Config) -> Result<Self> {
+        let client = ClientBuilder::new().build()?;
+        let mapper = Mapper { pool: todo!() };
+
+        let project_dirs = ProjectDirs::from("xyz", "navyd", "binaries")
+            .ok_or_else(|| anyhow!("no project dirs"))?;
+        let base_dirs = BaseDirs::new().ok_or_else(|| anyhow!("no base dirs"))?;
+
+        let build_fn = |bin| {
+            let (data_dir, cache_dir, executable_dir) = (
+                project_dirs.data_dir(),
+                project_dirs.cache_dir(),
+                base_dirs.executable_dir(),
+            );
+            let client = client.clone();
+            let mapper = mapper.clone();
+            async move {
+                BinaryPackageBuilder::default()
+                    .bin(bin)
+                    .data_dir(data_dir.to_owned())
+                    .link_path(
+                        executable_dir
+                            .map(ToOwned::to_owned)
+                            .ok_or_else(|| anyhow!("no exe dir"))?,
+                    )
+                    .cache_dir(cache_dir.to_owned())
+                    .client(client)
+                    .mapper(mapper)
+                    .build()
+                    .await
+            }
+        };
+
+        let bin_pkgs: Vec<_> =
+            try_join_all(config.bins().iter().map(Clone::clone).map(build_fn)).await?;
+
+        Ok(Self {
+            base_dirs,
+            bin_pkgs,
+            client,
+            mapper,
+            project_dirs,
+        })
     }
 
-    pub fn install(&self) -> Result<()> {
-        for pkg in &self.bin_pkgs {
-
-            let pkg = pkg.clone();
-            tokio::spawn(async move {
-                if !pkg.has_installed().await {
-                    pkg.install(Some(&*TEMPLATE)).await?;
-                }
+    pub async fn install(&self) -> Result<()> {
+        let task = |pkg: BinaryPackage| async move {
+            if !pkg.has_installed().await {
+                pkg.install(Some(&*TEMPLATE)).await
+            } else {
                 Ok::<_, Error>(())
-            });
-        }
-        todo!()
+            }
+        };
+
+        let jobs = self
+            .bin_pkgs
+            .iter()
+            .map(Clone::clone)
+            .map(task)
+            .collect::<Vec<_>>();
+
+        let jobs = join_all(jobs).await as Vec<Result<_>>;
+        Ok(())
     }
 }
 

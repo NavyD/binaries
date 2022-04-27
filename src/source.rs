@@ -10,7 +10,7 @@ use url::Url;
 pub mod github;
 
 #[async_trait]
-pub trait Visible: std::fmt::Debug {
+pub trait Visible: std::fmt::Debug + Send + Sync {
     async fn latest_ver(&self) -> Result<String>;
 
     async fn get_url(&self, ver: &str) -> Result<Url>;
