@@ -1,4 +1,3 @@
-use std::fs::create_dir_all;
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
@@ -7,14 +6,14 @@ use std::time::Duration;
 
 use anyhow::Error;
 use anyhow::{anyhow, bail, Result};
-use async_trait::async_trait;
+
 use derive_builder::Builder;
 use directories::BaseDirs;
 use directories::ProjectDirs;
 use futures_util::future::join_all;
 use futures_util::future::try_join_all;
 use futures_util::StreamExt;
-use getset::Getters;
+
 use handlebars::Handlebars;
 use log::log_enabled;
 use log::{debug, error, info, trace, warn};
@@ -26,8 +25,7 @@ use reqwest::Client;
 use reqwest::ClientBuilder;
 use serde_json::json;
 use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::Pool;
-use sqlx::Sqlite;
+
 use tokio::fs::read_to_string;
 use tokio::fs::remove_file;
 use tokio::{fs as afs, io::AsyncWriteExt};
@@ -48,12 +46,13 @@ use crate::{
 
 static TEMPLATE: Lazy<Handlebars<'static>> = Lazy::new(Handlebars::new);
 
+#[derive(Debug, Clone)]
 pub struct PackageManager {
     bin_pkgs: Vec<BinaryPackage>,
-    client: Client,
-    mapper: Mapper,
-    project_dirs: ProjectDirs,
-    base_dirs: BaseDirs,
+    // client: Client,
+    // mapper: Mapper,
+    // project_dirs: ProjectDirs,
+    // base_dirs: BaseDirs,
 }
 
 fn build_client() -> Result<Client> {
@@ -122,13 +121,7 @@ impl PackageManager {
         let bin_pkgs: Vec<_> =
             try_join_all(config.bins().iter().map(Clone::clone).map(build_fn)).await?;
         trace!("got {} bin packages", bin_pkgs.len());
-        Ok(Self {
-            base_dirs,
-            bin_pkgs,
-            client,
-            mapper,
-            project_dirs,
-        })
+        Ok(Self { bin_pkgs })
     }
 
     pub async fn install(&self) -> Result<()> {
@@ -246,10 +239,12 @@ impl BinaryPackage {
         // download
         let download_path = self.download(&url).await?;
         let to = &self.data_dir;
-        afs::create_dir_all(&to).await?;
+        if !afs::metadata(to).await.map_or(false, |d| d.is_dir()) {
+            bail!("{} is not a dir", to.display());
+        }
 
         // try use custom to extract
-        self.extract(&download_path, &to, template).await?;
+        self.extract(&download_path, to, template).await?;
 
         // link to exe dir
         self.link(&to).await?;

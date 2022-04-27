@@ -1,26 +1,16 @@
-use std::fmt;
-use std::path::PathBuf;
-use std::result;
 use std::str;
-use std::str::FromStr;
 
-use anyhow::Result;
-
-use serde::de;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use url::Url;
+use serde::Deserialize;
 
 /// The contents of the configuration file.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-pub struct RawConfig {
-}
+pub struct RawConfig {}
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
     use toml::Value;
-
-    use super::*;
 
     #[test]
     fn test_name() -> Result<()> {
@@ -37,6 +27,5 @@ exe-glob = ""
         let v = s.parse::<Value>()?;
         println!("{:?}", v);
         Ok(())
-        
     }
 }

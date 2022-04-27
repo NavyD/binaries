@@ -1,11 +1,11 @@
-use std::{env::consts::OS, path::PathBuf};
+use std::env::consts::OS;
 
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use derive_builder::Builder;
-use getset::{Getters, Setters};
-use log::{debug, error, log_enabled, trace, warn};
+use getset::Getters;
+use log::{error, log_enabled, trace, warn};
 use mime::Mime;
 use regex::Regex;
 use reqwest::Client;
@@ -13,7 +13,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use url::Url;
 
-use crate::{config, extract::SUPPORTED_CONTENT_TYPES, util::get_archs};
+use crate::{extract::SUPPORTED_CONTENT_TYPES, util::get_archs};
 
 use super::Visible;
 
