@@ -61,12 +61,22 @@ impl Mapper {
         .map(|e| e.last_insert_rowid() as u32)
         .map_err(Into::into)
     }
+
+    pub async fn delete_by_name(&self, name: &str) -> Result<usize> {
+        sqlx::query("delete from updated_info where name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .map(|r| r.rows_affected() as usize)
+            .map_err(Into::into)
+    }
 }
 #[cfg(test)]
 mod tests {
     use anyhow::Error;
     use chrono::{TimeZone, Utc};
     use futures_util::TryStreamExt;
+    use log::trace;
     use once_cell::sync::Lazy;
     use sqlx::sqlite::SqlitePoolOptions;
     use std::thread;
@@ -89,11 +99,12 @@ mod tests {
                         .max_connections(4)
                         .connect("sqlite::memory:")
                         .await?;
-                    let sql = read_to_string("table_sqlite.sql").await?;
-                    println!("setup sql: {}", sql);
+                    let sql =
+                        read_to_string("schema.sql").await? + &read_to_string("data.sql").await?;
+                    trace!("setup sql: {}", sql);
                     let mut rows = sqlx::query(&sql).execute_many(&pool).await;
                     while let Some(row) = rows.try_next().await? {
-                        println!("get row: {:?}", row);
+                        trace!("get row: {:?}", row);
                     }
                     Ok::<_, Error>(pool)
                 })
@@ -171,6 +182,17 @@ mod tests {
             let mut res = info.clone();
             res.id = info.id;
             assert_eq!(info, res);
+            Ok::<_, Error>(())
+        })
+    }
+
+    #[test]
+    fn feature()  -> Result<()> {
+        TOKIO_RT.block_on(async {
+            assert_eq!(MAPPER.delete_by_name("btm").await?, 2);
+            assert_eq!(MAPPER.delete_by_name("tldr").await?, 1);
+            assert_eq!(MAPPER.delete_by_name("btm").await?, 0);
+            assert_eq!(MAPPER.delete_by_name("__no_name_#_").await?, 0);
             Ok::<_, Error>(())
         })
     }

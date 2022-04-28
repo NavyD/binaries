@@ -80,6 +80,7 @@ async fn build_mapper(p: impl AsRef<Path>) -> Result<Mapper> {
         .max_connections((num_cpus::get() + 2) as u32)
         .connect(&format!("sqlite:{}", p.as_ref().display()))
         .await?;
+
     Ok(Mapper { pool })
 }
 
@@ -228,6 +229,47 @@ impl BinaryPackage {
         })
     }
 
+    pub async fn is_updateable(&self) -> bool {
+        if self.bin.version().is_some() || !self.has_installed().await {
+            return false;
+        }
+
+        let name = self.bin.name();
+        match self
+            .mapper
+            .select_list_by_name(name)
+            .await
+            .and_then(|mut infos| {
+                infos.sort_by(|a, b| b.create_time().cmp(a.create_time()));
+                trace!("found {} infos by name {}: {:?}", infos.len(), name, infos);
+                let first = infos
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| anyhow!("not found first in infos: {:?}", infos));
+                debug!("found latest info by name {}: {:?}", name, first);
+                first
+            }) {
+            Ok(info) => self
+                .visible
+                .latest_ver()
+                .await
+                .map(|latest| {
+                    let cur = info.version();
+                    trace!(
+                        "checking current version: {} vs latest version: {}",
+                        cur,
+                        latest
+                    );
+                    &latest > cur
+                })
+                .unwrap_or(false),
+            Err(e) => {
+                warn!("failed to get info by name {}: {}", name, e);
+                false
+            }
+        }
+    }
+
     pub async fn install(&self, template: Option<&Handlebars<'_>>) -> Result<()> {
         let ver = match self.bin.version() {
             Some(ver) => ver.clone(),
@@ -275,7 +317,20 @@ impl BinaryPackage {
             info!("failed to remove cache dir {}: {}", cache_dir.display(), e);
         }
 
-        // TODO: remove db
+        let name = self.bin.name();
+        trace!("deleting installed infos of {} from db", name);
+        match self.mapper.delete_by_name(name).await {
+            Ok(rows) => {
+                if rows != 0 {
+                    trace!("deleted {} infos of {}", rows, name);
+                } else {
+                    warn!("no info of {} removed", name);
+                }
+            }
+            Err(e) => {
+                info!("failed to delete info of {}: {}", name, e);
+            }
+        }
         Ok(())
     }
 
@@ -498,11 +553,12 @@ mod tests {
                         .max_connections(4)
                         .connect("sqlite::memory:")
                         .await?;
-                    let sql = read_to_string("table_sqlite.sql").await?;
-                    println!("setup sql");
+                    let sql =
+                        read_to_string("schema.sql").await? + &read_to_string("data.sql").await?;
+                    trace!("setup sql: {}", sql);
                     let mut rows = sqlx::query(&sql).execute_many(&pool).await;
                     while let Some(row) = rows.try_next().await? {
-                        println!("get row: {:?}", row);
+                        trace!("get row: {:?}", row);
                     }
                     Ok::<_, Error>(pool)
                 })
