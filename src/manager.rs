@@ -12,8 +12,10 @@ use directories::BaseDirs;
 use directories::ProjectDirs;
 use futures_util::future::join_all;
 use futures_util::future::try_join_all;
+use futures_util::FutureExt;
 use futures_util::StreamExt;
 
+use getset::Getters;
 use handlebars::Handlebars;
 use log::log_enabled;
 use log::{debug, error, info, trace, warn};
@@ -44,115 +46,9 @@ use crate::{
     util::find_one_exe_with_glob,
 };
 
-static TEMPLATE: Lazy<Handlebars<'static>> = Lazy::new(Handlebars::new);
-
-#[derive(Debug, Clone)]
-pub struct PackageManager {
-    bin_pkgs: Vec<BinaryPackage>,
-    // client: Client,
-    // mapper: Mapper,
-    // project_dirs: ProjectDirs,
-    // base_dirs: BaseDirs,
-}
-
-fn build_client() -> Result<Client> {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::ACCEPT,
-        header::HeaderValue::from_static("application/vnd.github.v3+json"),
-    );
-    let name = "Authorization";
-    if let Ok(val) = std::env::var(name) {
-        info!("loaded token {} for github rate limit", name);
-        headers.insert(name, header::HeaderValue::from_str(&val)?);
-    }
-    headers.insert(header::USER_AGENT, header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Safari/537.36"));
-
-    ClientBuilder::new()
-        .default_headers(headers)
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(Into::into)
-}
-
-async fn build_mapper(p: impl AsRef<Path>) -> Result<Mapper> {
-    let pool = SqlitePoolOptions::new()
-        .max_connections((num_cpus::get() + 2) as u32)
-        .connect(&format!("sqlite:{}", p.as_ref().display()))
-        .await?;
-
-    Ok(Mapper { pool })
-}
-
-impl PackageManager {
-    pub async fn new(config: Config) -> Result<Self> {
-        let project_dirs = ProjectDirs::from("xyz", "navyd", CRATE_NAME)
-            .ok_or_else(|| anyhow!("no project dirs"))?;
-        let base_dirs = BaseDirs::new().ok_or_else(|| anyhow!("no base dirs"))?;
-
-        let client = build_client()?;
-        let mapper =
-            build_mapper(project_dirs.data_dir().join(&format!("{}.db", CRATE_NAME))).await?;
-
-        let build_fn = |bin| {
-            let (data_dir, cache_dir, executable_dir) = (
-                project_dirs.data_dir(),
-                project_dirs.cache_dir(),
-                base_dirs.executable_dir(),
-            );
-            let client = client.clone();
-            let mapper = mapper.clone();
-            async move {
-                BinaryPackageBuilder::default()
-                    .bin(bin)
-                    .data_dir(data_dir.to_owned())
-                    .link_path(
-                        executable_dir
-                            .map(ToOwned::to_owned)
-                            .ok_or_else(|| anyhow!("no exe dir"))?,
-                    )
-                    .cache_dir(cache_dir.to_owned())
-                    .client(client)
-                    .mapper(mapper)
-                    .build()
-                    .await
-            }
-        };
-
-        let bin_pkgs: Vec<_> =
-            try_join_all(config.bins().iter().map(Clone::clone).map(build_fn)).await?;
-        trace!("got {} bin packages", bin_pkgs.len());
-        Ok(Self { bin_pkgs })
-    }
-
-    pub async fn install(&self) -> Result<()> {
-        let task = |pkg: BinaryPackage| async move {
-            if !pkg.has_installed().await {
-                pkg.install(Some(&*TEMPLATE)).await
-            } else {
-                info!("installed bin {} is skipped", pkg.bin.name());
-                Ok::<_, Error>(())
-            }
-        };
-
-        let jobs = self
-            .bin_pkgs
-            .iter()
-            .map(Clone::clone)
-            .map(task)
-            .collect::<Vec<_>>();
-        debug!("waiting for install {} jobs", jobs.len());
-        for job in join_all(jobs).await as Vec<Result<_>> {
-            if let Err(e) = job {
-                warn!("failed to install: {}", e);
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Builder)]
+#[derive(Debug, Clone, Builder, Getters)]
 #[builder(build_fn(name = "pre_build"))]
+#[getset(get = "pub")]
 pub struct BinaryPackage {
     bin: config::Binary,
     #[builder(private)]
@@ -216,17 +112,30 @@ impl BinaryPackageBuilder {
 impl BinaryPackage {
     pub async fn has_installed(&self) -> bool {
         let name = self.bin.name().to_owned();
-        tokio::task::spawn_blocking(move || {
-            which(&name).map_or(false, |p| {
-                trace!("found executable bin {} in {}", name, p.display());
-                true
+        let whiched = {
+            let name = name.clone();
+            tokio::task::spawn_blocking(move || {
+                which(&name).map_or(false, |p| {
+                    trace!("found executable bin {} in {}", name, p.display());
+                    true
+                })
             })
-        })
-        .await
-        .unwrap_or_else(|e| {
-            error!("failed spawn blocking `which` task: {}", e);
-            false
-        })
+            .await
+            .unwrap_or_else(|e| {
+                error!("failed spawn blocking `which` task: {}", e);
+                false
+            })
+        };
+
+        whiched
+            && self
+                .mapper
+                .select_list_by_name(&name)
+                .await
+                .map_or(false, |v| {
+                    trace!("found infos by name {}: {:?}", name, v);
+                    !v.is_empty()
+                })
     }
 
     pub async fn is_updateable(&self) -> bool {
@@ -299,22 +208,22 @@ impl BinaryPackage {
     }
 
     pub async fn uninstall(&self) -> Result<()> {
-        let link = &self.link_path;
-        trace!("removing link file {}", link.display());
-        if let Err(e) = afs::remove_file(&link).await {
-            info!("failed to remove a link file {}: {}", link.display(), e);
+        trace!("removing link file {}", self.link_path.display());
+        if let Err(e) = afs::remove_file(&self.link_path).await {
+            info!(
+                "failed to remove a link file {}: {}",
+                self.link_path.display(),
+                e
+            );
         }
 
-        let bin_dir = &self.data_dir;
-        trace!("removing data dir {}", bin_dir.display());
-        if let Err(e) = afs::remove_dir_all(&bin_dir).await {
-            info!("failed to remove data dir {}: {}", bin_dir.display(), e);
-        }
-
-        let cache_dir = &self.cache_dir;
-        trace!("removing cache dir {}", cache_dir.display());
-        if let Err(e) = afs::remove_dir_all(&cache_dir).await {
-            info!("failed to remove cache dir {}: {}", cache_dir.display(), e);
+        trace!("removing data dir {}", self.data_dir.display());
+        if let Err(e) = afs::remove_dir_all(&self.data_dir).await {
+            info!(
+                "failed to remove data dir {}: {}",
+                self.data_dir.display(),
+                e
+            );
         }
 
         let name = self.bin.name();
@@ -330,6 +239,15 @@ impl BinaryPackage {
             Err(e) => {
                 info!("failed to delete info of {}: {}", name, e);
             }
+        }
+        Ok(())
+    }
+
+    pub async fn clean_cache(&self) -> Result<()> {
+        let cache_dir = &self.cache_dir;
+        trace!("removing cache dir {}", cache_dir.display());
+        if let Err(e) = afs::remove_dir_all(&cache_dir).await {
+            info!("failed to remove cache dir {}: {}", cache_dir.display(), e);
         }
         Ok(())
     }
