@@ -56,6 +56,55 @@ pub struct HookAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Source {
     Github { owner: String, repo: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+
+    use super::*;
+
+    #[test]
+    fn test_name() -> Result<()> {
+        let bin = BinaryBuilder::default()
+            .name("clash")
+            .exe_glob("clash")
+            .hook(
+                HookActionBuilder::default()
+                    .extract("tar xvf {{ from }} -C {{to}}")
+                    .build()?,
+            )
+            .source(Source::Github {
+                owner: "a".to_owned(),
+                repo: "b".to_owned(),
+            })
+            // .pick_regex("")
+            .build()?;
+        let config = Config {
+            bins: vec![bin.clone(), bin],
+        };
+
+        let s = serde_yaml::to_string(&config)?;
+        println!("{}", s);
+        Ok(())
+    }
+
+    #[test]
+    fn test_config() -> Result<()> {
+        let s = r#"
+bins:
+  - name: clash
+    source:
+      github:
+        owner: a
+        repo: b
+"#;
+        let config: Config = serde_yaml::from_str(s)?;
+        assert_eq!(config.bins.len(), 1);
+        assert_eq!(config.bins[0].name(), "clash");
+        Ok(())
+    }
 }

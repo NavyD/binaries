@@ -18,7 +18,7 @@ use futures_util::{
     FutureExt,
 };
 use handlebars::Handlebars;
-use log::{debug, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use once_cell::sync::Lazy;
 use reqwest::{
     header::{self, HeaderMap},
@@ -59,13 +59,11 @@ impl Opt {
 
         let pm = PackageManager::new(config).await?;
         match &self.commands {
-            Commands::Install => {
-                pm.install().await?;
-            }
-            Commands::Uninstall(args) => {}
+            Commands::Install => pm.install().await?,
+            Commands::Uninstall(args) => pm.uninstall(args).await?,
             _ => {}
         }
-        todo!()
+        Ok(())
     }
 
     async fn load_config(&self) -> Result<Config> {
@@ -73,12 +71,12 @@ impl Opt {
             .config_path
             .as_deref()
             .map(ToOwned::to_owned)
-            .unwrap_or_else(|| PROJECT_DIRS.config_dir().join("config.toml"));
+            .unwrap_or_else(|| PROJECT_DIRS.config_dir().join("config.yaml"));
 
         info!("loading config from {}", path.display());
         let config = afs::read_to_string(path).await?;
         trace!("loaded config str: {}", config);
-        toml::from_str(&config).map_err(Into::into)
+        serde_yaml::from_str(&config).map_err(Into::into)
     }
 
     fn init_log(&self) -> Result<()> {
@@ -111,14 +109,7 @@ pub struct UninstallArgs {
     names: Option<Vec<String>>,
 
     #[clap(short, long)]
-    r#type: Option<UninstallType>,
-}
-
-#[derive(Debug, ArgEnum, Clone, EnumString)]
-enum UninstallType {
-    All,
-    Unused,
-    Used,
+    all: bool,
 }
 
 static TEMPLATE: Lazy<Handlebars<'static>> = Lazy::new(Handlebars::new);
@@ -126,17 +117,11 @@ static TEMPLATE: Lazy<Handlebars<'static>> = Lazy::new(Handlebars::new);
 #[derive(Debug, Clone)]
 pub struct PackageManager {
     bin_pkgs: Vec<BinaryPackage>,
-    config: Config,
-    // client: Client,
-    // mapper: Mapper,
-    // project_dirs: ProjectDirs,
-    // base_dirs: BaseDirs,
 }
 
 impl PackageManager {
     pub async fn new(config: Config) -> Result<Self> {
-        let project_dirs = ProjectDirs::from("xyz", "navyd", CRATE_NAME)
-            .ok_or_else(|| anyhow!("no project dirs"))?;
+        let project_dirs = PROJECT_DIRS.clone();
         let base_dirs = BaseDirs::new().ok_or_else(|| anyhow!("no base dirs"))?;
 
         let client = build_client()?;
@@ -164,12 +149,22 @@ impl PackageManager {
             }
         };
 
-        let bin_pkgs: Vec<_> =
-            try_join_all(config.bins().iter().map(Clone::clone).map(build_pkg)).await?;
+        // build packages
+        let bin_pkgs = try_join_all(
+            config
+                .bins()
+                .iter()
+                .map(Clone::clone)
+                .map(build_pkg)
+                .map(tokio::spawn),
+        )
+        .await?
+        .into_iter()
+        .collect::<Result<Vec<BinaryPackage>>>()?;
+
         trace!("got {} bin packages", bin_pkgs.len());
 
-        // check db and config file
-
+        // uninstall unused bins
         join_all(
             unused_bins(&mapper, config.bins())
                 .await?
@@ -196,20 +191,31 @@ impl PackageManager {
             Err(e) => warn!("{}", e),
         });
 
-        for info in mapper.select_all().await? {
-            if !config.bins().iter().all(|bin| bin.name() == info.name()) {
-                warn!(
-                    "found a bin {} in db but not configured. create time: {}",
-                    info.name(),
-                    info.create_time()
-                );
-            }
-        }
-
-        Ok(Self { bin_pkgs, config })
+        Ok(Self { bin_pkgs })
     }
 
     pub async fn uninstall(&self, args: &UninstallArgs) -> Result<()> {
+        if args.all {
+            try_join_all(
+                self.bin_pkgs
+                    .iter()
+                    .map(Clone::clone)
+                    .map(|pkg| async move {
+                        let name = pkg.bin().name();
+
+                        pkg.uninstall().await.map(|_| name.to_owned())
+                    })
+                    .map(tokio::spawn),
+            )
+            .await?
+            .into_iter()
+            .for_each(|r: Result<_>| match r {
+                Ok(name) => info!("uninstalled {}", name),
+                Err(e) => error!("{}", e),
+            });
+            return Ok(());
+        }
+
         if let Some(names) = &args.names {
             let jobs = names
                 .iter()
@@ -228,31 +234,7 @@ impl PackageManager {
             return Ok(());
         }
 
-        let used = || {
-            let jobs = self
-                .bin_pkgs
-                .iter()
-                .cloned()
-                .map(|pkg| async move { pkg.uninstall().await })
-                .map(tokio::spawn)
-                .collect::<Vec<JoinHandle<_>>>();
-            async move {
-                for job in try_join_all(jobs).await? {
-                    if let Err(e) = job {
-                        warn!("failed to uninstall: {}", e);
-                    }
-                }
-                Ok::<_, Error>(())
-            }
-        };
-
-        match &args.r#type {
-            Some(UninstallType::All) => {}
-            Some(UninstallType::Unused) => {}
-            Some(UninstallType::Used) => {}
-            None => {}
-        }
-        todo!()
+        Ok(())
     }
 
     pub async fn check(&self) -> Result<()> {

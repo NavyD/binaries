@@ -61,11 +61,11 @@ zip-extract = "0.1.1"
 md-5 = "0.10.1"
 infer = "0.7.0"
 handlebars = "4.2.2"
-toml = "0.5.9"
 num_cpus = "1.13.1"
 clap = { version = "3.1.12", features = ["derive"] }
 strum = { version = "0.24.0", features = ["derive"] }
 strum_macros = "0.24.0"
+serde_yaml = "0.8.23"
 
 [dev-dependencies]
 dotenv = "0.15.0"
