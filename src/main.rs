@@ -6,14 +6,17 @@ use std::{
 
 use anyhow::{anyhow, bail, Error, Result};
 use binaries::{
-    config::Config,
+    config::{Binary, BinaryBuilder, Config, Source},
     manager::{BinaryPackage, BinaryPackageBuilder},
     updated_info::Mapper,
     CRATE_NAME,
 };
 use clap::{ArgEnum, Args, Parser, Subcommand};
 use directories::{BaseDirs, ProjectDirs};
-use futures_util::future::{join_all, try_join_all};
+use futures_util::{
+    future::{join_all, try_join_all},
+    FutureExt,
+};
 use handlebars::Handlebars;
 use log::{debug, info, trace, warn};
 use once_cell::sync::Lazy;
@@ -140,11 +143,11 @@ impl PackageManager {
         let mapper =
             build_mapper(project_dirs.data_dir().join(&format!("{}.db", CRATE_NAME))).await?;
 
-        let build_fn = |bin| {
+        let build_pkg = |bin| {
             let (data_dir, cache_dir, executable_dir) = (
-                project_dirs.data_dir(),
-                project_dirs.cache_dir(),
-                base_dirs.executable_dir(),
+                project_dirs.data_dir().to_owned(),
+                project_dirs.cache_dir().to_owned(),
+                base_dirs.executable_dir().map(ToOwned::to_owned),
             );
             let client = client.clone();
             let mapper = mapper.clone();
@@ -152,11 +155,7 @@ impl PackageManager {
                 BinaryPackageBuilder::default()
                     .bin(bin)
                     .data_dir(data_dir.to_owned())
-                    .link_path(
-                        executable_dir
-                            .map(ToOwned::to_owned)
-                            .ok_or_else(|| anyhow!("no exe dir"))?,
-                    )
+                    .link_path(executable_dir.ok_or_else(|| anyhow!("no exe dir"))?)
                     .cache_dir(cache_dir.to_owned())
                     .client(client)
                     .mapper(mapper)
@@ -166,10 +165,37 @@ impl PackageManager {
         };
 
         let bin_pkgs: Vec<_> =
-            try_join_all(config.bins().iter().map(Clone::clone).map(build_fn)).await?;
+            try_join_all(config.bins().iter().map(Clone::clone).map(build_pkg)).await?;
         trace!("got {} bin packages", bin_pkgs.len());
 
         // check db and config file
+
+        join_all(
+            unused_bins(&mapper, config.bins())
+                .await?
+                .into_iter()
+                .map(build_pkg)
+                .map(|f| async move {
+                    let pkg: BinaryPackage = f.await?;
+                    info!("uninstalling unused binary {}", pkg.bin().name());
+                    pkg.uninstall()
+                        .await
+                        .map(|_| pkg.bin().name().to_owned())
+                        .map_err(|e| {
+                            anyhow!("failed to uninstall unused bin {}: {}", pkg.bin().name(), e)
+                        })
+                })
+                .map(tokio::spawn),
+        )
+        .await
+        .iter()
+        .filter_map(|r| r.as_ref().ok())
+        .map(|r| r.as_deref())
+        .for_each(|r: Result<&str, _>| match r {
+            Ok(name) => debug!("uninstalled bin {} of unused", name),
+            Err(e) => warn!("{}", e),
+        });
+
         for info in mapper.select_all().await? {
             if !config.bins().iter().all(|bin| bin.name() == info.name()) {
                 warn!(
@@ -199,6 +225,32 @@ impl PackageManager {
                     warn!("failed to uninstall: {}", e);
                 }
             }
+            return Ok(());
+        }
+
+        let used = || {
+            let jobs = self
+                .bin_pkgs
+                .iter()
+                .cloned()
+                .map(|pkg| async move { pkg.uninstall().await })
+                .map(tokio::spawn)
+                .collect::<Vec<JoinHandle<_>>>();
+            async move {
+                for job in try_join_all(jobs).await? {
+                    if let Err(e) = job {
+                        warn!("failed to uninstall: {}", e);
+                    }
+                }
+                Ok::<_, Error>(())
+            }
+        };
+
+        match &args.r#type {
+            Some(UninstallType::All) => {}
+            Some(UninstallType::Unused) => {}
+            Some(UninstallType::Used) => {}
+            None => {}
         }
         todo!()
     }
@@ -233,6 +285,28 @@ impl PackageManager {
         }
         Ok(())
     }
+}
+
+async fn unused_bins(mapper: &Mapper, bins: &[Binary]) -> Result<Vec<Binary>> {
+    let unused = mapper
+        .select_all()
+        .await?
+        .into_iter()
+        .filter(|info| !bins.iter().any(|bin| bin.name() == info.name()))
+        .map(|info| {
+            BinaryBuilder::default()
+                .name(info.name())
+                .source(serde_json::from_str::<Source>(info.source())?)
+                .build()
+                .map_err(Into::into)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    debug!(
+        "found {} bins of unused and {} bins of used",
+        unused.len(),
+        bins.len()
+    );
+    Ok(unused)
 }
 
 fn build_client() -> Result<Client> {

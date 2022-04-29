@@ -10,6 +10,8 @@ pub struct UpdatedInfo {
     id: u32,
     name: String,
     version: String,
+    url: String,
+    source: String,
     updated_time: DateTime<Local>,
     create_time: DateTime<Local>,
 }
@@ -19,6 +21,8 @@ impl UpdatedInfo {
         let now = Local::now();
         Self {
             id: 0,
+            source: todo!(),
+            url: todo!(),
             name: name.to_owned(),
             version: ver.to_owned(),
             updated_time: now,
@@ -170,6 +174,8 @@ mod tests {
         TOKIO_RT.block_on(async {
             let info = UpdatedInfo {
                 id: 0,
+                source: todo!(),
+                url: todo!(),
                 name: "tldr".to_owned(),
                 version: "v0.3.0".to_owned(),
                 updated_time: Local::now(),
