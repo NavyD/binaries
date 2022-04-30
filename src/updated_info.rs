@@ -1,34 +1,27 @@
 use anyhow::Result;
 use chrono::{DateTime, Local};
+use derive_builder::Builder;
 use getset::{Getters, Setters};
-use sqlx::SqlitePool;
+use sqlx::{Database, Decode, FromRow, Row, SqlitePool};
+
+use crate::config::Source;
+
 // static RB: Lazy<Rbatis> = Lazy::new(Rbatis::new);
 
-#[derive(sqlx::FromRow, Debug, Clone, PartialEq, Eq, Getters, Setters)]
+#[derive(sqlx::FromRow, Debug, Clone, PartialEq, Eq, Getters, Setters, Builder)]
 #[getset(get = "pub", set = "pub")]
+#[builder(setter(into))]
 pub struct UpdatedInfo {
+    #[builder(default = "0")]
     id: u32,
     name: String,
     version: String,
     url: String,
     source: String,
+    #[builder(default = "Local::now()")]
     updated_time: DateTime<Local>,
+    #[builder(default = "Local::now()")]
     create_time: DateTime<Local>,
-}
-
-impl UpdatedInfo {
-    pub fn with_installed(name: &str, ver: &str) -> Self {
-        let now = Local::now();
-        Self {
-            id: 0,
-            source: todo!(),
-            url: todo!(),
-            name: name.to_owned(),
-            version: ver.to_owned(),
-            updated_time: now,
-            create_time: now,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -54,10 +47,12 @@ impl Mapper {
 
     pub async fn insert(&self, info: &UpdatedInfo) -> Result<u32> {
         sqlx::query(
-            "insert into updated_info(name, version, updated_time, create_time) values(?, ?, ?, ?)",
+            "insert into updated_info(name, version, source, url, updated_time, create_time) values(?, ?, ?, ?, ?, ?)",
         )
         .bind(&info.name)
         .bind(&info.version)
+        .bind(&info.source())
+        .bind(&info.url())
         .bind(&info.updated_time)
         .bind(&info.create_time)
         .execute(&self.pool)
@@ -86,6 +81,8 @@ mod tests {
     use std::thread;
     use tokio::{fs::read_to_string, runtime::Runtime};
 
+    use crate::config::Source;
+
     use super::*;
 
     pub static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
@@ -103,8 +100,9 @@ mod tests {
                         .max_connections(4)
                         .connect("sqlite::memory:")
                         .await?;
-                    let sql =
-                        read_to_string("schema.sql").await? + &read_to_string("data.sql").await?;
+                    let sql = read_to_string("schema.sql").await?
+                        + "\n"
+                        + &read_to_string("data.sql").await?;
                     trace!("setup sql: {}", sql);
                     let mut rows = sqlx::query(&sql).execute_many(&pool).await;
                     while let Some(row) = rows.try_next().await? {
@@ -151,6 +149,8 @@ mod tests {
             assert_eq!(infos[0].id, 1);
             assert_eq!(infos[0].name, "btm");
             assert_eq!(infos[0].version, "v0.6.0");
+            assert_eq!(infos[0].source, r#"{"github":{"owner":"ClementTsang","repo":"bottom"}}"#);
+            assert_eq!(infos[0].url, r#"https://github.com/ClementTsang/bottom/releases/download/0.6.8/bottom_x86_64-unknown-linux-gnu.tar.gz"#);
             assert_eq!(infos[0].create_time, parse_date("2020-06-17 20:10:23")?);
             assert_eq!(infos[0].updated_time, parse_date("2020-06-17 20:10:23")?);
 
@@ -172,15 +172,14 @@ mod tests {
     #[test]
     fn test_insert() -> Result<()> {
         TOKIO_RT.block_on(async {
-            let info = UpdatedInfo {
-                id: 0,
-                source: todo!(),
-                url: todo!(),
-                name: "tldr".to_owned(),
-                version: "v0.3.0".to_owned(),
-                updated_time: Local::now(),
-                create_time: Local::now(),
-            };
+            let source = serde_json::to_string(&"github:a/b".parse::<Source>()?)?;
+            let info = UpdatedInfoBuilder::default()
+                .name("tldr")
+                .version("v0.3.0")
+                .source(&source)
+                .url("https://github.com/dbrgn/tealdeer/releases/download/v1.5.0/tealdeer-linux-x86_64-musl")
+                .build()?;
+
             let last_id = MAPPER.insert(&info).await?;
             assert_ne!(info.id, last_id);
             assert_eq!(last_id, 4);
@@ -193,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn feature()  -> Result<()> {
+    fn feature() -> Result<()> {
         TOKIO_RT.block_on(async {
             assert_eq!(MAPPER.delete_by_name("btm").await?, 2);
             assert_eq!(MAPPER.delete_by_name("tldr").await?, 1);

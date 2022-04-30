@@ -1,8 +1,13 @@
 pub mod raw;
 
+use std::str::FromStr;
+
+use anyhow::{bail, Error};
 use derive_builder::Builder;
 use getset::{Getters, Setters};
+use log::trace;
 use serde::{Deserialize, Serialize};
+use strum::{EnumString, EnumVariantNames, VariantNames};
 
 #[derive(Debug, Getters, Setters, Clone, Builder, Serialize, Deserialize)]
 #[getset(get = "pub")]
@@ -55,10 +60,42 @@ pub struct HookAction {
     extract: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Source {
     Github { owner: String, repo: String },
+}
+
+impl FromStr for Source {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        trace!("parsing Source from str: {}", s);
+        const DELIMITER: char = ':';
+        let a = s.split(DELIMITER).collect::<Vec<_>>();
+        if a.len() != 2 {
+            bail!("failed to parse Source: then len {} is not 2", a.len());
+        }
+        let (name, value) = (a[0].trim().to_lowercase(), a[1].trim());
+        match name.as_str() {
+            "github" => {
+                let delimiter = '/';
+                let v = value.split(delimiter).collect::<Vec<_>>();
+                if v.len() != 2 {
+                    bail!(
+                        "source parse error: splits {} is not 2 by delimiter {}",
+                        v.len(),
+                        delimiter
+                    );
+                }
+                Ok(Source::Github {
+                    owner: v[0].to_owned(),
+                    repo: v[1].to_owned(),
+                })
+            }
+            _ => bail!("unsupported name: {}", name),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -89,6 +126,9 @@ mod tests {
 
         let s = serde_yaml::to_string(&config)?;
         println!("{}", s);
+
+        let source = "github:a/b".parse::<Source>()?;
+        println!("{}", serde_json::to_string(&source)?);
         Ok(())
     }
 

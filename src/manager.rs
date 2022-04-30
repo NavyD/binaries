@@ -42,7 +42,7 @@ use crate::source::Visible;
 use crate::CRATE_NAME;
 use crate::{
     extract::decompress,
-    updated_info::{Mapper, UpdatedInfo},
+    updated_info::{Mapper, UpdatedInfo, UpdatedInfoBuilder},
     util::find_one_exe_with_glob,
 };
 
@@ -201,7 +201,12 @@ impl BinaryPackage {
         self.link(&to).await?;
 
         // inserto into db
-        let info = UpdatedInfo::with_installed(self.bin.name(), &ver);
+        let info = UpdatedInfoBuilder::default()
+            .name(self.bin.name())
+            .source(serde_json::to_string(self.bin.source())?)
+            .url(url)
+            .version(ver)
+            .build()?;
         debug!("inserting info to db: {:?}", info);
         self.mapper.insert(&info).await?;
         Ok(())
@@ -256,6 +261,26 @@ impl BinaryPackage {
     where
         P: AsRef<Path>,
     {
+        let dst = &self.link_path;
+        // let is_exe_text = || {
+        //     let dst = dst.to_owned();
+        //     async move {
+        //         tokio::task::spawn_blocking(|| {
+        //             let is_text = infer::get_from_path(dst)?
+        //                 .map(|ty| ty.matcher_type() == infer::MatcherType::Text)
+        //                 .unwrap_or(false);
+        //             Ok::<_, Error>(is_text)
+        //         })
+        //         .await
+        //         .map_err(Into::into)
+        //         .and_then(std::convert::identity)
+        //         .unwrap_or(false)
+        //     }
+        // };
+        if afs::metadata(dst).await.is_ok() {
+            bail!("found the existing file {} for linking", dst.display());
+        }
+
         let src = {
             let base = to.as_ref().to_path_buf();
             let glob_pat = self.bin.exe_glob().as_ref().cloned().unwrap_or_else(|| {
@@ -269,8 +294,6 @@ impl BinaryPackage {
             });
             tokio::task::spawn_blocking(move || find_one_exe_with_glob(base, &glob_pat)).await??
         };
-
-        let dst = &self.link_path;
 
         if let Ok(d) = afs::metadata(&dst).await {
             error!(
