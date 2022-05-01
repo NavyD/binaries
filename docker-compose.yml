@@ -1,0 +1,17 @@
+version: "3"
+
+services:
+  test:
+    build:
+      dockerfile: test.Dockerfile
+    container_name: binaries
+    env_file:
+      - .env
+    volumes:
+      - ./target/release/binaries:/usr/local/bin/binaries
+      - ./config.yaml:/config.yaml
+    command: sh -c 'set -e;
+      export PATH="$PATH:/root/.local/bin";
+      binaries -vvvv -f /config.yaml install;
+      btm --version
+      '

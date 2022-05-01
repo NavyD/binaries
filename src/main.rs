@@ -16,6 +16,7 @@ use directories::{BaseDirs, ProjectDirs};
 use futures_util::{
     future::{join_all, try_join_all},
     FutureExt,
+    StreamExt,
 };
 use handlebars::Handlebars;
 use log::{debug, error, info, trace, warn};
@@ -24,9 +25,12 @@ use reqwest::{
     header::{self, HeaderMap},
     Client, ClientBuilder,
 };
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{sqlite::SqlitePoolOptions, Executor};
 use strum::EnumString;
-use tokio::{fs as afs, task::JoinHandle};
+use tokio::{
+    fs::{self as afs, create_dir_all, read_to_string},
+    task::JoinHandle,
+};
 
 static PROJECT_DIRS: Lazy<ProjectDirs> =
     Lazy::new(|| ProjectDirs::from("xyz", "navyd", CRATE_NAME).expect("no project dirs"));
@@ -260,10 +264,15 @@ impl PackageManager {
             .collect::<Vec<_>>() as Vec<JoinHandle<Result<()>>>;
         debug!("waiting for install {} jobs", jobs.len());
 
+        let mut fails = 0;
         for job in join_all(jobs).await {
             if let Err(e) = job? {
-                warn!("failed to install: {}", e);
+                error!("failed to install: {}", e);
+                fails += 1;
             }
+        }
+        if fails > 0 {
+            bail!("install has {} failed tasks", fails);
         }
         Ok(())
     }
@@ -312,10 +321,36 @@ fn build_client() -> Result<Client> {
 }
 
 async fn build_mapper(p: impl AsRef<Path>) -> Result<Mapper> {
-    let pool = SqlitePoolOptions::new()
-        .max_connections((num_cpus::get() + 2) as u32)
-        .connect(&format!("sqlite:{}", p.as_ref().display()))
-        .await?;
+    let p = p.as_ref();
+
+    let url = format!("sqlite:{}", p.display());
+    let mut opts = SqlitePoolOptions::new().max_connections((num_cpus::get() + 2) as u32);
+
+    if afs::metadata(p).await.is_err() {
+        if let Some(p) = p.parent() {
+            if afs::metadata(p).await.is_err() {
+                trace!("creating all dirs for sqlite db {}", p.display());
+                create_dir_all(p).await?;
+            }
+        }
+        trace!("creating db file: {}", p.display());
+        afs::File::create(p).await?;
+
+        let init_sql = include_str!("../schema.sql");
+
+        opts = opts.after_connect(move |con| {
+            Box::pin(async move {
+                trace!("executing sql for init sqlite: {}", init_sql);
+                let mut rows = con.execute_many(init_sql);
+                while let Some(row) = rows.next().await {
+                    trace!("get row: {:?}", row?);
+                }
+                Ok(())
+            })
+        });
+    }
+    debug!("connecting sqlite db for {}", url);
+    let pool = opts.connect(&url).await?;
 
     Ok(Mapper { pool })
 }

@@ -1,9 +1,0 @@
-
-
-[bins.btm]
-github="ClementTsang/bottom"
-# version = "latest"
-exe-glob = ""
-
-[bins.tldr]
-
