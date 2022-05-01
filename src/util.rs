@@ -1,13 +1,16 @@
 use std::os::unix::prelude::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::{env::consts::ARCH, path::Path};
 
 use anyhow::bail;
 use anyhow::Result;
 use globset::Glob;
-use log::trace;
 use log::{debug, error};
+use log::{log_enabled, trace};
+use parking_lot::Mutex;
+use serde::Serialize;
 use tokio::process::Command;
 use walkdir::WalkDir;
 
@@ -72,7 +75,18 @@ pub fn find_one_exe_with_glob(base: impl AsRef<Path>, glob_pat: &str) -> Result<
             base.display()
         );
     } else if paths.len() > 1 {
-        debug!("found {} paths for exe glob: {}", paths.len(), glob_pat);
+        if log_enabled!(log::Level::Debug) {
+            debug!(
+                "found {} paths for exe glob `{}`: {}",
+                paths.len(),
+                glob_pat,
+                paths
+                    .iter()
+                    .map(|p| p.path().display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
         let paths = paths
             .iter()
             .filter(|p| {
@@ -125,6 +139,35 @@ pub async fn run_cmd(cmd: &str, work_dir: impl AsRef<Path>) -> Result<()> {
         bail!("failed to run a command `{}` status {}", cmd, output.status,);
     }
     Ok(())
+}
+
+pub fn get_target_env() -> &'static str {
+    #[cfg(target_env = "gnu")]
+    {
+        "gnu"
+    }
+    #[cfg(target_env = "musl")]
+    {
+        "musl"
+    }
+    #[cfg(target_env = "msvc")]
+    {
+        "msvc"
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Templater {
+    h: Arc<Mutex<handlebars::Handlebars<'static>>>,
+}
+
+impl Templater {
+    pub fn render(&self, template: &str, data: &impl Serialize) -> Result<String> {
+        self.h
+            .lock()
+            .render_template(template, data)
+            .map_err(Into::into)
+    }
 }
 
 #[cfg(test)]

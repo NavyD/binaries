@@ -11,14 +11,12 @@ use binaries::{
     updated_info::Mapper,
     CRATE_NAME,
 };
-use clap::{ArgEnum, Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use directories::{BaseDirs, ProjectDirs};
 use futures_util::{
     future::{join_all, try_join_all},
-    FutureExt,
     StreamExt,
 };
-use handlebars::Handlebars;
 use log::{debug, error, info, trace, warn};
 use once_cell::sync::Lazy;
 use reqwest::{
@@ -26,9 +24,9 @@ use reqwest::{
     Client, ClientBuilder,
 };
 use sqlx::{sqlite::SqlitePoolOptions, Executor};
-use strum::EnumString;
+
 use tokio::{
-    fs::{self as afs, create_dir_all, read_to_string},
+    fs::{self as afs, create_dir_all},
     task::JoinHandle,
 };
 
@@ -116,8 +114,6 @@ pub struct UninstallArgs {
     all: bool,
 }
 
-static TEMPLATE: Lazy<Handlebars<'static>> = Lazy::new(Handlebars::new);
-
 #[derive(Debug, Clone)]
 pub struct PackageManager {
     bin_pkgs: Vec<BinaryPackage>,
@@ -176,12 +172,16 @@ impl PackageManager {
                 .map(build_pkg)
                 .map(|f| async move {
                     let pkg: BinaryPackage = f.await?;
-                    info!("uninstalling unused binary {}", pkg.bin().name());
+                    info!("uninstalling unused binary {}", pkg.bin().bin().name());
                     pkg.uninstall()
                         .await
-                        .map(|_| pkg.bin().name().to_owned())
+                        .map(|_| pkg.bin().bin().name().to_owned())
                         .map_err(|e| {
-                            anyhow!("failed to uninstall unused bin {}: {}", pkg.bin().name(), e)
+                            anyhow!(
+                                "failed to uninstall unused bin {}: {}",
+                                pkg.bin().bin().name(),
+                                e
+                            )
                         })
                 })
                 .map(tokio::spawn),
@@ -205,7 +205,7 @@ impl PackageManager {
                     .iter()
                     .map(Clone::clone)
                     .map(|pkg| async move {
-                        let name = pkg.bin().name();
+                        let name = pkg.bin().bin().name();
 
                         pkg.uninstall().await.map(|_| name.to_owned())
                     })
@@ -223,7 +223,11 @@ impl PackageManager {
         if let Some(names) = &args.names {
             let jobs = names
                 .iter()
-                .flat_map(|name| self.bin_pkgs.iter().find(|pkg| pkg.bin().name() == name))
+                .flat_map(|name| {
+                    self.bin_pkgs
+                        .iter()
+                        .find(|pkg| pkg.bin().bin().name() == name)
+                })
                 .map(|pkg| {
                     let pkg = pkg.clone();
                     async move { pkg.uninstall().await }
@@ -248,9 +252,9 @@ impl PackageManager {
     pub async fn install(&self) -> Result<()> {
         let task = |pkg: BinaryPackage| async move {
             if !pkg.has_installed().await {
-                pkg.install(Some(&*TEMPLATE)).await
+                pkg.install().await
             } else {
-                info!("installed bin {} is skipped", pkg.bin().name());
+                info!("installed bin {} is skipped", pkg.bin().bin().name());
                 Ok::<_, Error>(())
             }
         };
@@ -287,7 +291,7 @@ async fn unused_bins(mapper: &Mapper, bins: &[Binary]) -> Result<Vec<Binary>> {
         .map(|info| {
             BinaryBuilder::default()
                 .name(info.name())
-                .source(serde_json::from_str::<Source>(info.source())?)
+                .source(&serde_json::from_str::<Source>(info.source())?)?
                 .build()
                 .map_err(Into::into)
         })

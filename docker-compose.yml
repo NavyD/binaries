@@ -13,5 +13,6 @@ services:
     command: sh -c 'set -e;
       export PATH="$PATH:/root/.local/bin";
       binaries -vvvv -f /config.yaml install;
-      btm --version
+      btm --version;
+      clash -v;
       '

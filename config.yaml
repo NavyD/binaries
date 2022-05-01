@@ -26,4 +26,14 @@ bins:
      github:
       owner: ClementTsang
       repo: bottom
-    pick_regex: "bottom_x86_64-unknown-linux-gnu.tar.gz"
+    pick_regex: >
+      {{#if (eq os "linux")}}
+      bottom_x86_64-unknown-linux-gnu.tar.gz
+      {{else}}
+      bottom_x86_64-unknown-linux-gnu.tar.gz
+      {{/if}}
+  - name: clash
+    source:
+      github:
+        owner: Dreamacro
+        repo: clash

@@ -2,9 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Local};
 use derive_builder::Builder;
 use getset::{Getters, Setters};
-use sqlx::{Database, Decode, FromRow, Row, SqlitePool};
-
-use crate::config::Source;
+use sqlx::SqlitePool;
 
 // static RB: Lazy<Rbatis> = Lazy::new(Rbatis::new);
 

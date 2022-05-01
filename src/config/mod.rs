@@ -1,13 +1,10 @@
-pub mod raw;
-
 use std::str::FromStr;
 
-use anyhow::{bail, Error};
+use anyhow::{bail, Error, Result};
 use derive_builder::Builder;
 use getset::{Getters, Setters};
 use log::trace;
 use serde::{Deserialize, Serialize};
-use strum::{EnumString, EnumVariantNames, VariantNames};
 
 #[derive(Debug, Getters, Setters, Clone, Builder, Serialize, Deserialize)]
 #[getset(get = "pub")]
@@ -30,13 +27,14 @@ pub struct Binary {
     #[builder(default)]
     hook: Option<HookAction>,
 
-    #[builder(default)]
-    pick_regex: Option<String>,
-
     /// a glob of executable file in zip. for help to comfirm exe bin
     #[builder(default)]
     exe_glob: Option<String>,
 
+    #[builder(default)]
+    pick_regex: Option<String>,
+
+    #[builder(setter(custom))]
     source: Source,
 }
 
@@ -45,6 +43,16 @@ impl Binary {
         self.name.as_deref().unwrap_or(match &self.source {
             Source::Github { owner: _, repo } => repo.as_str(),
         })
+    }
+}
+
+impl BinaryBuilder {
+    pub fn source<T>(&mut self, source: T) -> Result<&mut Self>
+    where
+        T: TryInto<Source, Error = Error>,
+    {
+        self.source.replace(source.try_into()?);
+        Ok(self)
     }
 }
 
@@ -98,6 +106,22 @@ impl FromStr for Source {
     }
 }
 
+impl TryFrom<&str> for Source {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl TryFrom<&Source> for Source {
+    type Error = Error;
+
+    fn try_from(value: &Source) -> Result<Self, Self::Error> {
+        Ok(value.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -114,10 +138,7 @@ mod tests {
                     .extract("tar xvf {{ from }} -C {{to}}")
                     .build()?,
             )
-            .source(Source::Github {
-                owner: "a".to_owned(),
-                repo: "b".to_owned(),
-            })
+            .source("github:a/b")?
             // .pick_regex("")
             .build()?;
         let config = Config {

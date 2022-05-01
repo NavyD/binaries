@@ -2,47 +2,32 @@ use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Error;
 use anyhow::{anyhow, bail, Result};
-
+use async_trait::async_trait;
 use derive_builder::Builder;
-use directories::BaseDirs;
-use directories::ProjectDirs;
-use futures_util::future::join_all;
-use futures_util::future::try_join_all;
-use futures_util::FutureExt;
 use futures_util::StreamExt;
-
 use getset::Getters;
-use handlebars::Handlebars;
 use log::log_enabled;
 use log::{debug, error, info, trace, warn};
 use md5::{Digest, Md5};
-use once_cell::sync::Lazy;
-use reqwest::header;
-use reqwest::header::HeaderMap;
 use reqwest::Client;
-use reqwest::ClientBuilder;
 use serde_json::json;
-use sqlx::sqlite::SqlitePoolOptions;
-
 use tokio::fs::read_to_string;
 use tokio::fs::remove_file;
 use tokio::{fs as afs, io::AsyncWriteExt};
 use url::Url;
 use which::which;
 
-use crate::config;
-use crate::config::Config;
+use crate::config::Binary;
 use crate::config::Source;
 use crate::source::github::GithubBinaryBuilder;
 use crate::source::Visible;
-use crate::CRATE_NAME;
+use crate::util::Templater;
 use crate::{
     extract::decompress,
-    updated_info::{Mapper, UpdatedInfo, UpdatedInfoBuilder},
+    updated_info::{Mapper, UpdatedInfoBuilder},
     util::find_one_exe_with_glob,
 };
 
@@ -50,24 +35,55 @@ use crate::{
 #[builder(build_fn(name = "pre_build"))]
 #[getset(get = "pub")]
 pub struct BinaryPackage {
-    bin: config::Binary,
-    #[builder(private)]
-    visible: Arc<Box<dyn Visible + 'static>>,
+    #[builder(setter(custom))]
+    bin: Arc<Box<dyn Visible + 'static>>,
     mapper: Mapper,
     client: Client,
     data_dir: PathBuf,
     cache_dir: PathBuf,
     link_path: PathBuf,
+    #[builder(default)]
+    templater: Templater,
 }
 
 impl BinaryPackageBuilder {
+    pub fn bin(&mut self, bin: Binary) -> &mut Self {
+        #[derive(Debug)]
+        struct VisibleHelper {
+            bin: Binary,
+        }
+
+        #[async_trait]
+        impl Visible for VisibleHelper {
+            async fn latest_ver(&self) -> Result<String> {
+                unimplemented!()
+            }
+
+            async fn get_url(&self, _ver: &str) -> Result<Url> {
+                unimplemented!()
+            }
+
+            fn bin(&self) -> &Binary {
+                &self.bin
+            }
+        }
+
+        self.bin = Some(Arc::new(Box::new(VisibleHelper { bin })));
+        self
+    }
+
     pub async fn build(&mut self) -> Result<BinaryPackage> {
-        let bin = self.bin.as_ref().ok_or_else(|| anyhow!("no field bin"))?;
+        let bin = self
+            .bin
+            .take()
+            .ok_or_else(|| anyhow!("no field bin"))?
+            .bin()
+            .clone();
 
         self.link_path = self.link_path.take().map(|p| p.join(bin.name()));
 
         let visible: Box<dyn Visible> = match bin.source() {
-            Source::Github { owner, repo } => Box::new(
+            Source::Github { owner: _, repo: _ } => Box::new(
                 GithubBinaryBuilder::default()
                     .client(
                         self.client
@@ -75,23 +91,16 @@ impl BinaryPackageBuilder {
                             .ok_or_else(|| anyhow!("no field client"))?
                             .clone(),
                     )
-                    .has_extract_hook(
-                        bin.hook()
-                            .as_ref()
-                            .and_then(|h| h.extract().as_ref())
-                            .is_some(),
-                    )
-                    .pick_regex(bin.pick_regex().clone())
-                    .url(owner, repo)?
+                    .binary(bin)
                     .build()?,
             ),
         };
-        self.visible(Arc::new(visible));
+        self.bin.replace(Arc::new(visible));
 
         let mut pkg = self.pre_build()?;
 
-        pkg.data_dir = pkg.data_dir.join(pkg.bin.name());
-        pkg.cache_dir = pkg.cache_dir.join(pkg.bin.name());
+        pkg.data_dir = pkg.data_dir.join(&format!("{}/", pkg.bin.bin().name()));
+        pkg.cache_dir = pkg.cache_dir.join(&format!("{}/", pkg.bin.bin().name()));
 
         if afs::metadata(&pkg.link_path).await.is_ok() {
             bail!("link file has exists: {}", pkg.link_path.display());
@@ -111,7 +120,7 @@ impl BinaryPackageBuilder {
 
 impl BinaryPackage {
     pub async fn has_installed(&self) -> bool {
-        let name = self.bin.name().to_owned();
+        let name = self.bin.bin().name().to_owned();
         let whiched = {
             let name = name.clone();
             tokio::task::spawn_blocking(move || {
@@ -139,11 +148,11 @@ impl BinaryPackage {
     }
 
     pub async fn is_updateable(&self) -> bool {
-        if self.bin.version().is_some() || !self.has_installed().await {
+        if self.bin.bin().version().is_some() || !self.has_installed().await {
             return false;
         }
 
-        let name = self.bin.name();
+        let name = self.bin.bin().name();
         match self
             .mapper
             .select_list_by_name(name)
@@ -159,7 +168,7 @@ impl BinaryPackage {
                 first
             }) {
             Ok(info) => self
-                .visible
+                .bin
                 .latest_ver()
                 .await
                 .map(|latest| {
@@ -179,13 +188,18 @@ impl BinaryPackage {
         }
     }
 
-    pub async fn install(&self, template: Option<&Handlebars<'_>>) -> Result<()> {
-        let ver = match self.bin.version() {
+    pub async fn install(&self) -> Result<()> {
+        let ver = match self.bin.bin().version() {
             Some(ver) => ver.clone(),
-            None => self.visible.latest_ver().await?,
+            None => self.bin.latest_ver().await?,
         };
-        let url = self.visible.get_url(&ver).await?;
-        info!("installing {} version {} for {}", self.bin.name(), ver, url);
+        let url = self.bin.get_url(&ver).await?;
+        info!(
+            "installing {} version {} for {}",
+            self.bin.bin().name(),
+            ver,
+            url
+        );
 
         // download
         let download_path = self.download(&url).await?;
@@ -195,15 +209,15 @@ impl BinaryPackage {
         }
 
         // try use custom to extract
-        self.extract(&download_path, to, template).await?;
+        self.extract(&download_path, to).await?;
 
         // link to exe dir
         self.link(&to).await?;
 
         // inserto into db
         let info = UpdatedInfoBuilder::default()
-            .name(self.bin.name())
-            .source(serde_json::to_string(self.bin.source())?)
+            .name(self.bin.bin().name())
+            .source(serde_json::to_string(self.bin.bin().source())?)
             .url(url)
             .version(ver)
             .build()?;
@@ -231,7 +245,7 @@ impl BinaryPackage {
             );
         }
 
-        let name = self.bin.name();
+        let name = self.bin.bin().name();
         trace!("deleting installed infos of {} from db", name);
         match self.mapper.delete_by_name(name).await {
             Ok(rows) => {
@@ -283,15 +297,21 @@ impl BinaryPackage {
 
         let src = {
             let base = to.as_ref().to_path_buf();
-            let glob_pat = self.bin.exe_glob().as_ref().cloned().unwrap_or_else(|| {
-                let pat = format!("**/*{}*", self.bin.name());
-                info!(
-                    "use default glob pattern {} in directory {}",
-                    pat,
-                    base.display()
-                );
-                pat
-            });
+            let glob_pat = self
+                .bin
+                .bin()
+                .exe_glob()
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| {
+                    let pat = format!("**/*{}*", self.bin.bin().name());
+                    info!(
+                        "use default glob pattern {} in directory {}",
+                        pat,
+                        base.display()
+                    );
+                    pat
+                });
             tokio::task::spawn_blocking(move || find_one_exe_with_glob(base, &glob_pat)).await??
         };
 
@@ -321,18 +341,19 @@ impl BinaryPackage {
     /// * 如果extract hook前中已存在`bin.{name,filename}`目录
     /// * 或之后不存在`bin.{name,filename}`目录
     /// * 如果无法使用通用解压
-    async fn extract<P>(&self, from: P, to: P, template: Option<&Handlebars<'_>>) -> Result<()>
+    async fn extract<P>(&self, from: P, to: P) -> Result<()>
     where
         P: AsRef<Path>,
     {
         let cmd = self
             .bin
+            .bin()
             .hook()
             .as_ref()
             .and_then(|h| h.extract().as_deref())
             .and_then(|cmd| {
-                template?
-                    .render_template(
+                self.templater
+                    .render(
                         cmd,
                         &json!({
                             "from": from.as_ref().display().to_string(),
@@ -475,7 +496,7 @@ mod tests {
         runtime::Runtime,
     };
 
-    use crate::config::HookActionBuilder;
+    use crate::config::{Binary, BinaryBuilder, HookActionBuilder};
 
     use super::*;
 
@@ -518,11 +539,9 @@ mod tests {
     static EXE_DIR: Lazy<PathBuf> = Lazy::new(|| TEMP.path().join("exe_dir"));
 
     static PKG: Lazy<BinaryPackage> = Lazy::new(|| {
-        let bin = config::BinaryBuilder::default()
-            .source(Source::Github {
-                owner: "Dreamacro".to_owned(),
-                repo: "clash".to_owned(),
-            })
+        let bin = BinaryBuilder::default()
+            .source("github:Dreamacro/clash")
+            .unwrap()
             .build()
             .unwrap();
         create_pkg(bin).unwrap()
@@ -549,9 +568,7 @@ mod tests {
             .expect("build client")
     });
 
-    static HANDLEBARS: Lazy<Handlebars> = Lazy::new(Handlebars::new);
-
-    fn create_pkg(bin: config::Binary) -> Result<BinaryPackage> {
+    fn create_pkg(bin: Binary) -> Result<BinaryPackage> {
         let client = BIN_CLIENT.clone();
 
         let new_path = env::join_paths(
@@ -588,11 +605,11 @@ mod tests {
             env::set_var("PATH", &env::join_paths(once(EXE_DIR.clone()))?);
             let pkg = create_pkg(config)?;
 
-            assert!(which(pkg.bin.name()).is_err());
+            assert!(which(pkg.bin.bin().name()).is_err());
 
-            pkg.install(Some(&*HANDLEBARS)).await?;
+            pkg.install().await?;
 
-            let res = which(pkg.bin.name());
+            let res = which(pkg.bin.bin().name());
             assert!(res.is_ok());
 
             let out = Command::new(res.unwrap()).args(&["-V"]).output().await?;
@@ -602,11 +619,8 @@ mod tests {
 
             Ok::<_, Error>(())
         };
-        let config = config::BinaryBuilder::default()
-            .source(Source::Github {
-                owner: "XAMPPRocky".to_owned(),
-                repo: "tokei".to_owned(),
-            })
+        let config = BinaryBuilder::default()
+            .source("github:XAMPPRocky/tokei")?
             .build()?;
 
         test_fn(config).await?;
@@ -618,11 +632,11 @@ mod tests {
         let test_fn = |config| async move {
             let ver = "v12.1.2";
             let pkg = create_pkg(config)?;
-            let url = pkg.visible.get_url(ver).await?;
+            let url = pkg.bin.get_url(ver).await?;
             let from = pkg.download(&url).await?;
 
             let to = &pkg.data_dir;
-            pkg.extract(&from, to, Some(&*HANDLEBARS)).await?;
+            pkg.extract(&from, to).await?;
 
             // let mut dirs = afs::read_dir(&to).await?;
             let mut found = false;
@@ -642,19 +656,13 @@ mod tests {
             Ok::<_, Error>(())
         };
 
-        let config = config::BinaryBuilder::default()
-            .source(Source::Github {
-                owner: "XAMPPRocky".to_owned(),
-                repo: "tokei".to_owned(),
-            })
+        let config = BinaryBuilder::default()
+            .source("github:XAMPPRocky/tokei")?
             .build()?;
         test_fn(config).await?;
 
-        let config = config::BinaryBuilder::default()
-            .source(Source::Github {
-                owner: "XAMPPRocky".to_owned(),
-                repo: "tokei".to_owned(),
-            })
+        let config = BinaryBuilder::default()
+            .source("github:XAMPPRocky/tokei")?
             .hook(
                 HookActionBuilder::default()
                     .extract("tar xvf {{from}} -C {{to}}")
@@ -667,11 +675,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_extract_when_hook() -> Result<()> {
-        let config = config::BinaryBuilder::default()
-            .source(Source::Github {
-                owner: "Dreamacro".to_owned(),
-                repo: "clash".to_owned(),
-            })
+        let config = BinaryBuilder::default()
+            .source("github:Dreamacro/clash")?
             .hook(
                 HookActionBuilder::default()
                     .extract("sh -c 'gzip -dc --keep {{ from }} > {{ to }}/clash'")
@@ -681,11 +686,10 @@ mod tests {
 
         let ver = "v1.10.0";
         let pkg = create_pkg(config)?;
-        let url = pkg.visible.get_url(ver).await?;
+        let url = pkg.bin.get_url(ver).await?;
         let from = pkg.download(&url).await?;
 
-        pkg.extract(&from, &pkg.data_dir, Some(&*HANDLEBARS))
-            .await?;
+        pkg.extract(&from, &pkg.data_dir).await?;
 
         assert!(pkg.data_dir.join("clash").is_file());
         Ok(())
@@ -693,16 +697,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_download() -> Result<()> {
-        let bin = config::BinaryBuilder::default()
-            .source(Source::Github {
-                owner: "Dreamacro".to_owned(),
-                repo: "clash".to_owned(),
-            })
+        let bin = BinaryBuilder::default()
+            .source("github:Dreamacro/clash")?
             .build()?;
 
         let ver = "v1.10.0";
         let pkg = create_pkg(bin).expect("test error");
-        let url = pkg.visible.get_url(ver).await?;
+        let url = pkg.bin.get_url(ver).await?;
         let path = pkg.download(&url).await?;
 
         assert!(path.is_file());
