@@ -1,4 +1,4 @@
-use std::env::consts::{ARCH, OS};
+use std::env::consts::OS;
 
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -16,7 +16,7 @@ use url::Url;
 use crate::{
     config::{Binary, Source},
     extract::SUPPORTED_CONTENT_TYPES,
-    util::{get_archs, platform_values, Templater, get_target_env},
+    util::{get_archs, get_target_env, platform_values, Templater},
 };
 
 use super::Visible;
@@ -325,7 +325,12 @@ pub struct Release {
 impl Release {
     pub fn version(&self) -> &str {
         let (name, tag_name) = (self.name.trim(), self.tag_name.trim());
-        if name.starts_with(&tag_name) {
+        trace!(
+            "getting version in name `{}` or tag_name `{}`",
+            name,
+            tag_name
+        );
+        if name.len() >= tag_name.len() && name.contains(&tag_name) {
             tag_name
         } else {
             name

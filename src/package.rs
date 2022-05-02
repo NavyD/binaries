@@ -1,5 +1,3 @@
-use std::env::consts::ARCH;
-use std::env::consts::OS;
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
@@ -26,7 +24,7 @@ use crate::config::Binary;
 use crate::config::Source;
 use crate::source::github::GithubBinaryBuilder;
 use crate::source::Visible;
-use crate::util::get_target_env;
+
 use crate::util::platform_values;
 use crate::util::run_cmd;
 use crate::util::Templater;

@@ -9,7 +9,7 @@ use std::{env::consts::ARCH, path::Path};
 use anyhow::bail;
 use anyhow::{anyhow, Result};
 use globset::GlobBuilder;
-use log::{debug, error, log_enabled, trace};
+use log::{debug, error, info, log_enabled, trace};
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::json;
@@ -68,7 +68,7 @@ pub fn find_one_bin_with_glob(base: impl AsRef<Path>, glob_pat: &str) -> Result<
         base.display()
     );
     let glob = GlobBuilder::new(glob_pat)
-        .literal_separator(true)
+        // .literal_separator(true)
         .build()
         .map(|g| g.compile_matcher())?;
 
@@ -135,15 +135,16 @@ pub fn find_one_bin_with_glob(base: impl AsRef<Path>, glob_pat: &str) -> Result<
 }
 
 pub async fn run_cmd(cmd: &str, work_dir: impl AsRef<Path>) -> Result<()> {
-    let args = shell_words::split(cmd)?;
-    if args.is_empty() {
-        bail!("empty args: {}", cmd);
-    }
-    trace!(
+    info!(
         "running command `{}` in word dir {}",
         cmd,
         work_dir.as_ref().display()
     );
+    let args = shell_words::split(cmd)?;
+    if args.is_empty() {
+        bail!("empty args: {}", cmd);
+    }
+    trace!("running command args: {:?}", args);
     let child = Command::new(&args[0])
         .current_dir(work_dir)
         .args(&args[1..])
@@ -158,7 +159,12 @@ pub async fn run_cmd(cmd: &str, work_dir: impl AsRef<Path>) -> Result<()> {
         std::str::from_utf8(&output.stderr)?,
     );
     if !output.status.success() {
-        bail!("failed to run a command `{}` status {}", cmd, output.status,);
+        error!(
+            "failed to run a command `{}` status {}: {}",
+            cmd,
+            output.status,
+            std::str::from_utf8(&output.stderr)?
+        );
     }
     Ok(())
 }

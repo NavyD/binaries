@@ -22,7 +22,7 @@ pub struct RawConfig {
 
 #[derive(Debug, PartialEq, Eq, Default, Getters, Serialize, Deserialize)]
 #[getset(get = "pub", get_mut = "pub")]
-#[serde(default)]
+#[serde(default, rename_all = "kebab-case")]
 pub struct RawBinary {
     version: Option<String>,
 
