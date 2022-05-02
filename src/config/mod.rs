@@ -29,7 +29,7 @@ pub struct Binary {
 
     /// a glob of executable file in zip. for help to comfirm exe bin
     #[builder(default)]
-    exe_glob: Option<String>,
+    bin_glob: Option<String>,
 
     #[builder(default)]
     pick_regex: Option<String>,
@@ -132,7 +132,7 @@ mod tests {
     fn test_name() -> Result<()> {
         let bin = BinaryBuilder::default()
             .name("clash")
-            .exe_glob("clash")
+            .bin_glob("clash")
             .hook(
                 HookActionBuilder::default()
                     .extract("tar xvf {{ from }} -C {{to}}")

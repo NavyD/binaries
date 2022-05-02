@@ -2,7 +2,7 @@
 
 pub mod config;
 pub mod extract;
-pub mod manager;
+pub mod package;
 pub mod source;
 pub mod updated_info;
 pub mod util;

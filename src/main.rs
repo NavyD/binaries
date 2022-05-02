@@ -7,7 +7,7 @@ use std::{
 use anyhow::{anyhow, bail, Error, Result};
 use binaries::{
     config::{Binary, BinaryBuilder, Config, Source},
-    manager::{BinaryPackage, BinaryPackageBuilder},
+    package::{BinaryPackage, BinaryPackageBuilder},
     updated_info::Mapper,
     CRATE_NAME,
 };

@@ -32,8 +32,15 @@ bins:
       {{else}}
       bottom_x86_64-unknown-linux-gnu.tar.gz
       {{/if}}
+    # bin_glob: a
   - name: clash
     source:
       github:
         owner: Dreamacro
         repo: clash
+  - name: hugo
+    source:
+      github:
+        owner: gohugoio
+        repo: hugo
+    pick_regex: .*extended.*Linux.*tar.*

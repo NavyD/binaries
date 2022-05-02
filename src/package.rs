@@ -1,3 +1,5 @@
+use std::env::consts::ARCH;
+use std::env::consts::OS;
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
@@ -24,11 +26,12 @@ use crate::config::Binary;
 use crate::config::Source;
 use crate::source::github::GithubBinaryBuilder;
 use crate::source::Visible;
+use crate::util::get_target_env;
 use crate::util::Templater;
 use crate::{
     extract::decompress,
     updated_info::{Mapper, UpdatedInfoBuilder},
-    util::find_one_exe_with_glob,
+    util::find_one_bin_with_glob,
 };
 
 #[derive(Debug, Clone, Builder, Getters)]
@@ -276,21 +279,6 @@ impl BinaryPackage {
         P: AsRef<Path>,
     {
         let dst = &self.link_path;
-        // let is_exe_text = || {
-        //     let dst = dst.to_owned();
-        //     async move {
-        //         tokio::task::spawn_blocking(|| {
-        //             let is_text = infer::get_from_path(dst)?
-        //                 .map(|ty| ty.matcher_type() == infer::MatcherType::Text)
-        //                 .unwrap_or(false);
-        //             Ok::<_, Error>(is_text)
-        //         })
-        //         .await
-        //         .map_err(Into::into)
-        //         .and_then(std::convert::identity)
-        //         .unwrap_or(false)
-        //     }
-        // };
         if afs::metadata(dst).await.is_ok() {
             bail!("found the existing file {} for linking", dst.display());
         }
@@ -300,19 +288,31 @@ impl BinaryPackage {
             let glob_pat = self
                 .bin
                 .bin()
-                .exe_glob()
+                .bin_glob()
                 .as_ref()
-                .cloned()
+                .map(|glob| {
+                    let data = json!({
+                        "os": OS,
+                        "arch": ARCH,
+                        "target_env": get_target_env(),
+                    });
+                    trace!("rendering bin glob `{}` with data: {}", glob, data);
+                    self.templater.render(glob, &data).map(|pat| {
+                        let s = pat.trim().to_owned();
+                        debug!("use bin glob pattern {} in directory {}", s, base.display());
+                        s
+                    })
+                })
                 .unwrap_or_else(|| {
                     let pat = format!("**/*{}*", self.bin.bin().name());
-                    info!(
+                    warn!(
                         "use default glob pattern {} in directory {}",
                         pat,
                         base.display()
                     );
-                    pat
-                });
-            tokio::task::spawn_blocking(move || find_one_exe_with_glob(base, &glob_pat)).await??
+                    Ok(pat)
+                })?;
+            tokio::task::spawn_blocking(move || find_one_bin_with_glob(base, &glob_pat)).await??
         };
 
         if let Ok(d) = afs::metadata(&dst).await {

@@ -6,9 +6,8 @@ use std::{env::consts::ARCH, path::Path};
 
 use anyhow::bail;
 use anyhow::Result;
-use globset::Glob;
-use log::{debug, error};
-use log::{log_enabled, trace};
+use globset::GlobBuilder;
+use log::{debug, error, log_enabled, trace};
 use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::process::Command;
@@ -58,63 +57,78 @@ pub fn get_archs() -> Vec<String> {
 ///
 /// * 如果未匹配任何path
 /// * 如果匹配到多个可执行的path
-pub fn find_one_exe_with_glob(base: impl AsRef<Path>, glob_pat: &str) -> Result<PathBuf> {
+pub fn find_one_bin_with_glob(base: impl AsRef<Path>, glob_pat: &str) -> Result<PathBuf> {
     let base = base.as_ref();
-    trace!("finding one with glob {} in {}", glob_pat, base.display());
+    trace!(
+        "finding one bin with glob {} in {}",
+        glob_pat,
+        base.display()
+    );
+    let glob = GlobBuilder::new(glob_pat)
+        .literal_separator(true)
+        .build()
+        .map(|g| g.compile_matcher())?;
 
-    let glob = Glob::new(glob_pat)?.compile_matcher();
     let paths = WalkDir::new(base)
+        // exclude the root: base
+        .min_depth(1)
         .into_iter()
         .filter(|entry| entry.as_ref().map_or(false, |e| glob.is_match(e.path())))
         .collect::<Result<Vec<_>, _>>()?;
+    match paths.len() {
+        1 => {
+            use std::fs;
+            let path = paths[0].path().to_owned();
+            debug!("found a bin file {} in {}", path.display(), base.display());
 
-    let path = if paths.is_empty() {
-        bail!(
-            "not found exe files with glob {} in {}",
-            glob_pat,
-            base.display()
-        );
-    } else if paths.len() > 1 {
-        if log_enabled!(log::Level::Debug) {
-            debug!(
-                "found {} paths for exe glob `{}`: {}",
-                paths.len(),
-                glob_pat,
-                paths
-                    .iter()
-                    .map(|p| p.path().display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
+            const EXEC: u32 = 0o0111;
+            // set permission exec
+            fs::metadata(&path)
+                .map(|d| d.permissions())
+                .and_then(|mut perm| {
+                    let old = perm.mode();
+                    // if old & EXEC != 0 {
+                    //     return Ok(())
+                    // }
+                    let new = perm.mode() | EXEC;
+                    perm.set_mode(new);
+
+                    trace!(
+                        "set new mode {:#o} +x from old mode {:#o} for {}",
+                        new,
+                        old,
+                        path.display()
+                    );
+                    fs::set_permissions(&path, perm)
+                })?;
+
+            Ok(path)
         }
-        let paths = paths
-            .iter()
-            .filter(|p| {
-                p.metadata()
-                    // is executable
-                    .map_or(false, |data| {
-                        data.is_file() && data.permissions().mode() & 0o111 != 0
-                    })
-            })
-            .collect::<Vec<_>>();
-        trace!("found {} paths by filter exe permissions", paths.len());
-        if paths.len() != 1 {
+        0 => {
             error!(
-                "failed to get exe file with glob {} in {}. executable paths: {:?}",
+                "not found exe files with glob {} in {}",
                 glob_pat,
-                base.display(),
-                paths
+                base.display()
             );
-            bail!("not found a path for exe glob: {}", glob_pat);
+            bail!("not found one bin file");
         }
-        paths[0]
-    } else {
-        &paths[0]
+        len => {
+            if log_enabled!(log::Level::Error) {
+                error!(
+                    "found {} bin files in {} by bin glob `{}`: {}",
+                    len,
+                    base.display(),
+                    glob_pat,
+                    paths
+                        .iter()
+                        .map(|p| p.path().display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+            }
+            bail!("found multple bin files");
+        }
     }
-    .path()
-    .to_path_buf();
-
-    Ok(path)
 }
 
 pub async fn run_cmd(cmd: &str, work_dir: impl AsRef<Path>) -> Result<()> {
@@ -176,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_find_one_exe_with_glob() -> Result<()> {
-        let a = find_one_exe_with_glob("tests", "**/bin_exe")?;
+        let a = find_one_bin_with_glob("tests", "**/bin_exe")?;
         assert_eq!(a.file_name().and_then(|a| a.to_str()), Some("bin_exe"));
         Ok(())
     }
