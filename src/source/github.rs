@@ -16,7 +16,7 @@ use url::Url;
 use crate::{
     config::{Binary, Source},
     extract::SUPPORTED_CONTENT_TYPES,
-    util::{get_archs, get_target_env, Templater},
+    util::{get_archs, platform_values, Templater, get_target_env},
 };
 
 use super::Visible;
@@ -96,12 +96,12 @@ impl GithubBinary {
     /// * 如果未找到任何asset
     fn pick_asset<'a>(&self, rel: &'a Release) -> Result<&'a Asset> {
         let pick_re_fn = |hook| {
-            let data = json!({
-                "os": OS,
-                "arch": ARCH,
-                "target_env": get_target_env(),
-            });
-            trace!("rendering hook {} with data: {}", hook, data);
+            let data = platform_values(json!({
+                "name": self.bin().name(),
+                "repo": match self.binary.source() {
+                    Source::Github { owner: _, repo } => repo.to_owned(),
+                },
+            }))?;
             let re = self
                 .templater
                 .render(hook, &data)

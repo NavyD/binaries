@@ -22,8 +22,7 @@ pub struct Config {
 #[builder(pattern = "mutable", setter(into, strip_option))]
 pub struct Binary {
     #[builder(default)]
-    #[getset(skip)]
-    name: Option<String>,
+    name: String,
 
     #[builder(default)]
     version: Option<String>,
@@ -40,14 +39,6 @@ pub struct Binary {
 
     #[builder(setter(custom))]
     source: Source,
-}
-
-impl Binary {
-    pub fn name(&self) -> &str {
-        self.name.as_deref().unwrap_or(match &self.source {
-            Source::Github { owner: _, repo } => repo.as_str(),
-        })
-    }
 }
 
 impl BinaryBuilder {
@@ -72,6 +63,8 @@ pub struct HookAction {
     update: Option<String>,
     #[builder(default)]
     extract: Option<String>,
+    #[builder(default)]
+    uninstall: Option<String>,
 }
 
 /// A GitHub repository identifier.
@@ -155,7 +148,7 @@ impl TryFrom<RawConfig> for Config {
                 Ok(Binary {
                     bin_glob: bin.bin_glob().as_ref().or(raw.bin_glob.as_ref()).cloned(),
                     hook: bin.hook().as_ref().or(raw.hook.as_ref()).cloned(),
-                    name: Some(name),
+                    name,
                     pick_regex: bin
                         .pick_regex()
                         .as_ref()

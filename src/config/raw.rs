@@ -1,14 +1,12 @@
 use std::{fmt, str::FromStr};
 
 use anyhow::anyhow;
-use anyhow::{bail, Error, Result};
-use derive_builder::Builder;
-use getset::{Getters, Setters, MutGetters};
+use anyhow::{Error, Result};
+use getset::Getters;
 use indexmap::IndexMap;
-use log::trace;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{Binary, HookAction, GitHubRepository};
+use super::{GitHubRepository, HookAction};
 
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "kebab-case")]
@@ -128,6 +126,10 @@ mod tests {
                     "clash",
                     RawBinary {
                         github: "a/b".parse::<GitHubRepository>().ok(),
+                        hook: Some(HookAction {
+                            install: Some("echo a".to_owned()),
+                            ..Default::default()
+                        }),
                         ..Default::default()
                     },
                 ),
@@ -154,6 +156,7 @@ extract = "{extract}"
 
 [bins.{name1}]
 github = "{github1}"
+hook.install = "{install1}"
 
 [bins.{name2}]
 github = "{github2}"
@@ -173,6 +176,18 @@ github = "{github2}"
                 .unwrap()
                 .1
                 .github()
+                .as_ref()
+                .unwrap(),
+            install1 = config
+                .bins
+                .iter()
+                .next()
+                .unwrap()
+                .1
+                .hook
+                .as_ref()
+                .unwrap()
+                .install
                 .as_ref()
                 .unwrap(),
             name2 = config.bins.iter().nth(1).unwrap().0,

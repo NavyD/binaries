@@ -13,6 +13,8 @@ services:
     command: sh -c 'set -e;
       export PATH="$PATH:/root/.local/bin";
       binaries -vvvv -f /config.toml install;
-      clash -v;
-      hugo version;
+      clash -v && hugo version;
+
+      binaries -vvvv -f /config.toml uninstall -a;
+      ! which clash && which hugo;
       '

@@ -27,6 +27,8 @@ use crate::config::Source;
 use crate::source::github::GithubBinaryBuilder;
 use crate::source::Visible;
 use crate::util::get_target_env;
+use crate::util::platform_values;
+use crate::util::run_cmd;
 use crate::util::Templater;
 use crate::{
     extract::decompress,
@@ -105,9 +107,7 @@ impl BinaryPackageBuilder {
         pkg.data_dir = pkg.data_dir.join(&format!("{}/", pkg.bin.bin().name()));
         pkg.cache_dir = pkg.cache_dir.join(&format!("{}/", pkg.bin.bin().name()));
 
-        if afs::metadata(&pkg.link_path).await.is_ok() {
-            bail!("link file has exists: {}", pkg.link_path.display());
-        } else {
+        if afs::metadata(&pkg.link_path).await.is_err() {
             afs::create_dir_all(
                 &pkg.link_path
                     .parent()
@@ -234,12 +234,12 @@ impl BinaryPackage {
             .as_ref()
             .and_then(|h| h.install().as_deref())
         {
-            let data = json!({
+            let data = platform_values(json!({
                 "data_dir": self.data_dir.display().to_string(),
-            });
-            trace!("rendering install hook `{}` with data: {}", hook, data);
+                "name": self.bin.bin().name(),
+            }))?;
             let cmd = self.templater.render(hook, &data)?;
-            
+            run_cmd(&cmd, &self.data_dir).await?;
         }
 
         Ok(())
@@ -278,6 +278,21 @@ impl BinaryPackage {
                 info!("failed to delete info of {}: {}", name, e);
             }
         }
+
+        if let Some(hook) = self
+            .bin
+            .bin()
+            .hook()
+            .as_ref()
+            .and_then(|h| h.uninstall().as_deref())
+        {
+            let data = platform_values(json!({
+                "data_dir": self.data_dir.display().to_string(),
+                "name": self.bin.bin().name(),
+            }))?;
+            let cmd = self.templater.render(hook, &data)?;
+            run_cmd(&cmd, &self.data_dir).await?;
+        }
         Ok(())
     }
 
@@ -307,12 +322,9 @@ impl BinaryPackage {
                 .bin_glob()
                 .as_ref()
                 .map(|glob| {
-                    let data = json!({
-                        "os": OS,
-                        "arch": ARCH,
-                        "target_env": get_target_env(),
-                    });
-                    trace!("rendering bin glob `{}` with data: {}", glob, data);
+                    let data = platform_values(json!({
+                        "name": self.bin.bin().name(),
+                    }))?;
                     self.templater.render(glob, &data).map(|pat| {
                         let s = pat.trim().to_owned();
                         debug!("use bin glob pattern {} in directory {}", s, base.display());
@@ -361,26 +373,22 @@ impl BinaryPackage {
     where
         P: AsRef<Path>,
     {
-        let cmd = self
+        let cmd = if let Some(hook) = self
             .bin
             .bin()
             .hook()
             .as_ref()
             .and_then(|h| h.extract().as_deref())
-            .and_then(|cmd| {
-                self.templater
-                    .render(
-                        cmd,
-                        &json!({
-                            "from": from.as_ref().display().to_string(),
-                            "to": to.as_ref().display().to_string()
-                        }),
-                    )
-                    .map_err(|e| {
-                        warn!("failed to render template `{}`: {}", cmd, e);
-                    })
-                    .ok()
-            });
+        {
+            let data = platform_values(json!({
+                "from": from.as_ref().display().to_string(),
+                "to": to.as_ref().display().to_string(),
+                "name": self.bin.bin().name(),
+            }))?;
+            Some(self.templater.render(hook, &data)?)
+        } else {
+            None
+        };
 
         decompress(from, to, cmd.as_deref()).await
     }

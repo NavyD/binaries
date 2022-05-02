@@ -1,5 +1,6 @@
-[bins.clash]
-github = "Dreamacro/clash"
+# [bins.clash]
+# github = "Dreamacro/clash"
+# hook.install = "echo '{{name}}___hello'"
 # pick_regex = """
 # {{#if (eq os "linux")}}
 # bottom_x86_64-unknown-linux-gnu.tar.gz
@@ -10,3 +11,6 @@ github = "Dreamacro/clash"
 [bins.hugo]
 github = "gohugoio/hugo"
 pick_regex = ".*extended.*Linux.*tar.*"
+hook.install = """
+sh -c 'hugo completion zsh > ~/_hugo; echo ~/_hugo'
+"""

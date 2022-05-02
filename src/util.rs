@@ -1,3 +1,5 @@
+use std::env::consts::OS;
+use std::fmt::Display;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -5,11 +7,12 @@ use std::sync::Arc;
 use std::{env::consts::ARCH, path::Path};
 
 use anyhow::bail;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use globset::GlobBuilder;
 use log::{debug, error, log_enabled, trace};
 use parking_lot::Mutex;
 use serde::Serialize;
+use serde_json::json;
 use tokio::process::Command;
 use walkdir::WalkDir;
 
@@ -136,6 +139,11 @@ pub async fn run_cmd(cmd: &str, work_dir: impl AsRef<Path>) -> Result<()> {
     if args.is_empty() {
         bail!("empty args: {}", cmd);
     }
+    trace!(
+        "running command `{}` in word dir {}",
+        cmd,
+        work_dir.as_ref().display()
+    );
     let child = Command::new(&args[0])
         .current_dir(work_dir)
         .args(&args[1..])
@@ -153,6 +161,18 @@ pub async fn run_cmd(cmd: &str, work_dir: impl AsRef<Path>) -> Result<()> {
         bail!("failed to run a command `{}` status {}", cmd, output.status,);
     }
     Ok(())
+}
+
+pub fn platform_values(mut val: serde_json::Value) -> Result<serde_json::Value> {
+    let mut base = json!({
+        "os": OS,
+        "arch": ARCH,
+        "target_env": get_target_env(),
+    });
+    base.as_object_mut()
+        .and_then(|o| val.as_object_mut().map(|v| o.append(v)))
+        .ok_or_else(|| anyhow!("val is not a object: {}", val))?;
+    Ok(base)
 }
 
 pub fn get_target_env() -> &'static str {
@@ -176,7 +196,8 @@ pub struct Templater {
 }
 
 impl Templater {
-    pub fn render(&self, template: &str, data: &impl Serialize) -> Result<String> {
+    pub fn render(&self, template: &str, data: &(impl Serialize + Display)) -> Result<String> {
+        trace!("rendering template `{}` with data: {}", template, data);
         self.h
             .lock()
             .render_template(template, data)
@@ -192,6 +213,21 @@ mod tests {
     fn test_find_one_exe_with_glob() -> Result<()> {
         let a = find_one_bin_with_glob("tests", "**/bin_exe")?;
         assert_eq!(a.file_name().and_then(|a| a.to_str()), Some("bin_exe"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_val() -> Result<()> {
+        let val = platform_values(json!({
+            "name": "a",
+            "repo": "b",
+        }))?;
+        assert_eq!(val["name"], "a");
+        assert_eq!(val["repo"], "b");
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(val["os"], "linux");
+        }
         Ok(())
     }
 }

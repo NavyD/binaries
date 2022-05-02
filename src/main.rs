@@ -195,27 +195,6 @@ impl PackageManager {
     }
 
     pub async fn uninstall(&self, args: &UninstallArgs) -> Result<()> {
-        if args.all {
-            try_join_all(
-                self.bin_pkgs
-                    .iter()
-                    .map(Clone::clone)
-                    .map(|pkg| async move {
-                        let name = pkg.bin().bin().name();
-
-                        pkg.uninstall().await.map(|_| name.to_owned())
-                    })
-                    .map(tokio::spawn),
-            )
-            .await?
-            .into_iter()
-            .for_each(|r: Result<_>| match r {
-                Ok(name) => info!("uninstalled {}", name),
-                Err(e) => error!("{}", e),
-            });
-            return Ok(());
-        }
-
         if let Some(names) = &args.names {
             let jobs = names
                 .iter()
@@ -238,7 +217,33 @@ impl PackageManager {
             return Ok(());
         }
 
-        Ok(())
+        let mut fails = 0;
+        for res in try_join_all(
+            self.bin_pkgs
+                .iter()
+                .map(Clone::clone)
+                .map(|pkg| async move {
+                    let name = pkg.bin().bin().name();
+
+                    pkg.uninstall().await.map(|_| name.to_owned())
+                })
+                .map(tokio::spawn),
+        )
+        .await?
+        {
+            match res {
+                Ok(name) => info!("uninstalled {}", name),
+                Err(e) => {
+                    fails += 1;
+                    error!("{}", e)
+                }
+            }
+        }
+        if fails == 0 {
+            Ok(())
+        } else {
+            bail!("uninstall has failed {} tasks", fails)
+        }
     }
 
     pub async fn check(&self) -> Result<()> {
