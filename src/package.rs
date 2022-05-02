@@ -226,6 +226,22 @@ impl BinaryPackage {
             .build()?;
         debug!("inserting info to db: {:?}", info);
         self.mapper.insert(&info).await?;
+
+        if let Some(hook) = self
+            .bin
+            .bin()
+            .hook()
+            .as_ref()
+            .and_then(|h| h.install().as_deref())
+        {
+            let data = json!({
+                "data_dir": self.data_dir.display().to_string(),
+            });
+            trace!("rendering install hook `{}` with data: {}", hook, data);
+            let cmd = self.templater.render(hook, &data)?;
+            
+        }
+
         Ok(())
     }
 

@@ -1,19 +1,23 @@
-use std::str::FromStr;
+use std::{fs::read_to_string, path::Path, str::FromStr};
 
 use anyhow::{bail, Error, Result};
 use derive_builder::Builder;
 use getset::{Getters, Setters};
-use log::trace;
+use log::{debug, trace};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Getters, Setters, Clone, Builder, Serialize, Deserialize)]
+use self::raw::RawConfig;
+
+pub mod raw;
+
+#[derive(Debug, Getters, Setters, Clone, Builder)]
 #[getset(get = "pub")]
 #[builder(pattern = "mutable", setter(into, strip_option))]
 pub struct Config {
     bins: Vec<Binary>,
 }
 
-#[derive(Debug, Getters, Setters, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Getters, Setters, Clone, Builder)]
 #[getset(get = "pub", set)]
 #[builder(pattern = "mutable", setter(into, strip_option))]
 pub struct Binary {
@@ -56,7 +60,9 @@ impl BinaryBuilder {
     }
 }
 
-#[derive(Debug, Getters, Setters, Clone, Builder, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, PartialEq, Eq, Getters, Setters, Clone, Builder, Serialize, Deserialize,
+)]
 #[getset(get = "pub", set)]
 #[builder(pattern = "mutable", setter(into, strip_option))]
 pub struct HookAction {
@@ -66,6 +72,15 @@ pub struct HookAction {
     update: Option<String>,
     #[builder(default)]
     extract: Option<String>,
+}
+
+/// A GitHub repository identifier.
+#[derive(Debug, PartialEq, Clone, Eq)]
+pub struct GitHubRepository {
+    /// The GitHub username / organization.
+    pub owner: String,
+    /// The GitHub repository name.
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -122,50 +137,45 @@ impl TryFrom<&Source> for Source {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use anyhow::Result;
+impl TryFrom<RawConfig> for Config {
+    type Error = Error;
 
-    use super::*;
+    fn try_from(raw: RawConfig) -> Result<Self, Self::Error> {
+        let bins = raw
+            .bins
+            .into_iter()
+            .map(|(name, bin)| {
+                let source = match bin.github() {
+                    Some(g) => Source::Github {
+                        owner: g.owner.to_owned(),
+                        repo: g.name.to_owned(),
+                    },
+                    None => bail!("not found source"),
+                };
+                Ok(Binary {
+                    bin_glob: bin.bin_glob().as_ref().or(raw.bin_glob.as_ref()).cloned(),
+                    hook: bin.hook().as_ref().or(raw.hook.as_ref()).cloned(),
+                    name: Some(name),
+                    pick_regex: bin
+                        .pick_regex()
+                        .as_ref()
+                        .or(raw.pick_regex.as_ref())
+                        .cloned(),
+                    source,
+                    version: bin.version().clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-    #[test]
-    fn test_name() -> Result<()> {
-        let bin = BinaryBuilder::default()
-            .name("clash")
-            .bin_glob("clash")
-            .hook(
-                HookActionBuilder::default()
-                    .extract("tar xvf {{ from }} -C {{to}}")
-                    .build()?,
-            )
-            .source("github:a/b")?
-            // .pick_regex("")
-            .build()?;
-        let config = Config {
-            bins: vec![bin.clone(), bin],
-        };
-
-        let s = serde_yaml::to_string(&config)?;
-        println!("{}", s);
-
-        let source = "github:a/b".parse::<Source>()?;
-        println!("{}", serde_json::to_string(&source)?);
-        Ok(())
+        Ok(Config { bins })
     }
+}
 
-    #[test]
-    fn test_config() -> Result<()> {
-        let s = r#"
-bins:
-  - name: clash
-    source:
-      github:
-        owner: a
-        repo: b
-"#;
-        let config: Config = serde_yaml::from_str(s)?;
-        assert_eq!(config.bins.len(), 1);
-        assert_eq!(config.bins[0].name(), "clash");
-        Ok(())
-    }
+pub fn from_path(path: impl AsRef<Path>) -> Result<Config> {
+    debug!("loading config from {}", path.as_ref().display());
+    let contents = read_to_string(path)?;
+    trace!("loaded raw config content: {}", contents);
+    let raw: RawConfig = toml::from_str(&contents)?;
+    trace!("parsing raw config: {:?}", raw);
+    raw.try_into().map_err(Into::into)
 }

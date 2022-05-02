@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Error, Result};
 use binaries::{
-    config::{Binary, BinaryBuilder, Config, Source},
+    config::{self, Binary, BinaryBuilder, Config, Source},
     package::{BinaryPackage, BinaryPackageBuilder},
     updated_info::Mapper,
     CRATE_NAME,
@@ -73,12 +73,8 @@ impl Opt {
             .config_path
             .as_deref()
             .map(ToOwned::to_owned)
-            .unwrap_or_else(|| PROJECT_DIRS.config_dir().join("config.yaml"));
-
-        info!("loading config from {}", path.display());
-        let config = afs::read_to_string(path).await?;
-        trace!("loaded config str: {}", config);
-        serde_yaml::from_str(&config).map_err(Into::into)
+            .unwrap_or_else(|| PROJECT_DIRS.config_dir().join("config.toml"));
+        config::from_path(path)
     }
 
     fn init_log(&self) -> Result<()> {
@@ -328,7 +324,7 @@ async fn build_mapper(p: impl AsRef<Path>) -> Result<Mapper> {
     let p = p.as_ref();
 
     let url = format!("sqlite:{}", p.display());
-    let mut opts = SqlitePoolOptions::new().max_connections((num_cpus::get() + 2) as u32);
+    let mut opts = SqlitePoolOptions::new();
 
     if afs::metadata(p).await.is_err() {
         if let Some(p) = p.parent() {
