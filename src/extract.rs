@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Result};
 use flate2::read::GzDecoder;
+use infer::MatcherType;
 use log::{debug, info, trace};
 use mime::Mime;
 use once_cell::sync::Lazy;
@@ -63,8 +64,29 @@ where
         return Ok(());
     }
 
-    tokio::task::spawn_blocking(move || extract(from, to)).await??;
-    Ok(())
+    let ty = infer::get_from_path(&from)
+        .map_err(Into::into)
+        .and_then(|ty| ty.ok_or_else(|| anyhow!("not infer mime type for {}", from.display())))?;
+    if matches!(ty.matcher_type(), MatcherType::App | MatcherType::Text if ty.mime_type().contains('x'))
+    {
+        trace!(
+            "skipped decompress for executable file {}: {}",
+            from.display(),
+            ty.mime_type()
+        );
+        let to = to.join(
+            from.file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| anyhow!("os str"))?,
+        );
+        debug!("renaming {} to {} in extract", from.display(), to.display());
+        afs::rename(from, to).await?;
+        Ok(())
+    } else {
+        tokio::task::spawn_blocking(move || extract(from, to))
+            .await?
+            .map_err(Into::into)
+    }
 }
 
 fn extract<P>(from: P, to: P) -> Result<()>

@@ -15,7 +15,6 @@ use url::Url;
 
 use crate::{
     config::{Binary, Source},
-    extract::SUPPORTED_CONTENT_TYPES,
     util::{get_archs, get_target_env, platform_values, Templater},
 };
 
@@ -160,40 +159,6 @@ impl GithubBinary {
         if assets.is_empty() {
             bail!("empty assets by regex or name");
         }
-
-        if self
-            .binary()
-            .hook()
-            .as_ref()
-            .and_then(|h| h.extract().as_ref())
-            .is_none()
-        {
-            // filter by content type
-            let old_len = assets.len();
-            trace!(
-                "filtering {} assets by extract content types: {:?}",
-                old_len,
-                SUPPORTED_CONTENT_TYPES
-            );
-
-            assets.retain(|a| SUPPORTED_CONTENT_TYPES.contains(a.content_type()));
-
-            if log_enabled!(log::Level::Debug) {
-                debug!(
-                    "filtered {} assets by extract content types: {}",
-                    old_len - assets.len(),
-                    assets
-                        .iter()
-                        .map(|a| a.name().to_owned())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                );
-            }
-
-            if assets.is_empty() {
-                bail!("empty assets by supported content type",)
-            }
-        };
 
         if assets.len() == 1 {
             trace!("picked asset: {:?}", assets[0]);
