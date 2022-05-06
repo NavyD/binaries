@@ -6,7 +6,6 @@ use chrono::{DateTime, Utc};
 use derive_builder::Builder;
 use getset::Getters;
 use log::{debug, log_enabled, trace, warn};
-use mime::Mime;
 use regex::Regex;
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -381,12 +380,8 @@ pub struct Asset {
     #[serde(rename = "label")]
     label: Option<String>,
 
-    #[serde(
-        rename = "content_type",
-        deserialize_with = "hyper_serde::deserialize",
-        serialize_with = "hyper_serde::serialize"
-    )]
-    content_type: Mime,
+    #[serde(rename = "content_type")]
+    content_type: String,
 
     #[serde(rename = "size")]
     size: i64,

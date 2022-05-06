@@ -1,7 +1,6 @@
 use std::{
     path::{Path, PathBuf},
     process::exit,
-    time::Duration,
 };
 
 use anyhow::{anyhow, bail, Error, Result};
@@ -320,7 +319,6 @@ fn build_client() -> Result<Client> {
 
     ClientBuilder::new()
         .default_headers(headers)
-        .timeout(Duration::from_secs(20))
         .build()
         .map_err(Into::into)
 }
