@@ -205,4 +205,68 @@ github = "{github2}"
         assert_eq!(config, raw);
         Ok(())
     }
+    // new feature
+    #[derive(Debug, PartialEq, Eq, Default, Getters, Serialize, Deserialize)]
+    #[serde(default, rename_all = "kebab-case")]
+    struct Con {
+        pub bins: IndexMap<String, Bin>,
+    }
+    #[derive(Debug, PartialEq, Eq, Default, Getters, Serialize, Deserialize)]
+    #[serde(default, rename_all = "kebab-case")]
+    struct Bin {
+        github: Option<String>,
+        #[serde(rename = "hook")]
+        hooks: Option<Vec<Hook>>,
+    }
+
+    #[derive(Debug, PartialEq, Eq, Default, Getters, Serialize, Deserialize)]
+    #[serde(default, rename_all = "kebab-case")]
+
+    struct Hook {
+        work_dir: Option<String>,
+        command: String,
+        #[serde(rename = "on")]
+        ons: Vec<HookOn>,
+    }
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    enum HookOn {
+        Install,
+        Update,
+        Extract,
+    }
+    #[test]
+    fn test_raw() -> Result<()> {
+        let s = r#"
+[bins.clash]
+github = 'a/b'
+release = true
+pick = ['.*{{os}}.*']
+bin-pick-glob = ['clash-{{os}}*']
+exe-path = '$HOME/.local/bin'
+
+[[bins.clash.hook]]
+word-dir = 'a'
+command = 'sh'
+on = ['install', 'update']
+each_file = true
+pick-glob = ['clash-{{os}}*']
+
+[[bins.clash.hook]]
+word-dir = 'b'
+command = 'bash'
+on = ['extract']
+
+
+[bins.bat]
+github = "sharkdp/bat"
+release = true
+
+
+
+"#;
+        let v: Con = toml::from_str(&s)?;
+        println!("{:?}", v);
+        Ok(())
+    }
 }

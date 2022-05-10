@@ -62,6 +62,7 @@ impl Opt {
         match &self.commands {
             Commands::Install => pm.install().await?,
             Commands::Uninstall(args) => pm.uninstall(args).await?,
+            Commands::List => pm.list().await?,
             _ => {}
         }
         Ok(())
@@ -93,7 +94,6 @@ impl Opt {
 #[derive(Debug, Subcommand)]
 enum Commands {
     List,
-    Check,
     Update,
     Install,
     Uninstall(UninstallArgs),
@@ -245,8 +245,52 @@ impl PackageManager {
         }
     }
 
-    pub async fn check(&self) -> Result<()> {
-        todo!()
+    pub async fn list(&self) -> Result<()> {
+        let find_vers = |pkg: BinaryPackage| async move {
+            let old_ver = if pkg.has_installed().await {
+                let mut infos = pkg
+                    .mapper()
+                    .select_list_by_name(pkg.bin().bin().name())
+                    .await?;
+                infos.sort_by(|a, b| b.create_time().cmp(a.create_time()));
+                infos.first().map(|info| info.version().to_owned())
+            } else {
+                info!("installed bin {} is skipped", pkg.bin().bin().name());
+                None
+            };
+            let latest_ver = pkg.bin().latest_ver().await?;
+            Ok::<_, Error>((pkg, old_ver, latest_ver))
+        };
+
+        let jobs = self
+            .bin_pkgs
+            .iter()
+            .map(Clone::clone)
+            .map(find_vers)
+            .map(tokio::spawn)
+            .collect::<Vec<_>>()
+            as Vec<JoinHandle<Result<(BinaryPackage, Option<String>, String)>>>;
+
+        for job in join_all(jobs).await {
+            match job? {
+                Ok((bin, old, latest)) => {
+                    let name = bin.bin().bin().name();
+                    if let Some(old) = old {
+                        if old < latest {
+                            println!("updateable {}: {} => {}", name, old, latest);
+                        } else {
+                            println!("installed {}: {}", name, old);
+                        }
+                    } else {
+                        println!("installable {}: {}", name, latest);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("faild to check job: {}", e)
+                }
+            }
+        }
+        Ok(())
     }
 
     pub async fn install(&self) -> Result<()> {
