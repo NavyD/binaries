@@ -1,16 +1,135 @@
-# [bins.clash]
-# github = "Dreamacro/clash"
-# hook.install = "echo '{{name}}___hello'"
-# pick_regex = """
-# {{#if (eq os "linux")}}
-# bottom_x86_64-unknown-linux-gnu.tar.gz
-# {{else}}
-# bottom_x86_64-unknown-linux-gnu.tar.gz
-# {{/if}}"""
+[data]
+
+[default]
+[default.completions]
+path = '{{bins.completion.dir}}/{{bins.completion.type}}/{{name}}'
+
+[default.bin]
+# 默认使用shim链接执行文件
+type = 'shim'
+# 默认安装到bin文件到文件`exe_dir/bin`
+path = '{{bins.exe_dir}}'
+shim-template = """
+#!/usr/bin/env sh
+"{{bins.exe_dir}}/{{name}}" "$@"
+"""
+
+[pm.pip]
+install = 'python3 -m pip install {{name}}'
+
+[pm.pipx]
+install = 'pipx install {{name}}'
+update = 'pipx upgrade {{name}}'
+
+[pm.apt-get]
+install = 'apt-get install {{name}}'
+
+[pm.go]
+
+[pm.cargo]
+
 
 [bins.hugo]
 github = "gohugoio/hugo"
-pick_regex = ".*extended.*Linux.*tar.*"
-hook.install = """
-sh -c 'hugo completion zsh > ~/_hugo; echo ~/_hugo'
+release = true
+pick = ".*extended.*Linux.*tar.*"
+[bins.hugo.bin.hugo]
+[bins.hugo.completions._hugo]
+type = 'fpath'
+command = 'hugo completions zsh'
+
+[bins.update-golang]
+# clone latest
+github = 'udhos/update-golang'
+# branch = 'master'
+[bins.update-golang.bin.goup]
+# pick update-golang.sh to goup
+pick = '*.sh'
+type = 'shim'
+shim-template = """
+#!/usr/bin/env sh
+dest="$([ -n "$GOROOT" ] && dirname "$GOROOT" || echo "$HOME/.local/share")"
+# PROFILED for env file
+DESTINATION="$dest" PROFILED="/dev/null" CACHE="/tmp" "{{bins.exe_dir}}/{{name}}" "$@"
 """
+[bins.update-golang.bin.goup_root]
+# pick update-golang.sh to goup
+pick = '*.sh'
+path = '/usr/local/bin'
+
+[bins.clash]
+github = "Dreamacro/clash"
+release = true
+tag = 'premium'
+pick = ['clash-{{os}}-{{arch}}-2022.05.17.gz']
+[bins.clash.bin.clash]
+pick = 'clash*'
+# 检查目录权限用户，非当前用户时主动提权或失败
+path = '/usr/local/bin'
+type = 'copy'
+# type = 'shim'
+# type = 'symlink'
+[[bins.clash.hook]]
+user = 'root'
+on = ['install']
+shebang = '/bin/sh -c'
+command = """
+echo '[Unit]
+Description=Clash daemon, A rule-based proxy in Go.
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+ExecStart=/home/navyd/.local/bin/clash -d /home/navyd/.config/clash
+
+[Install]
+WantedBy=multi-user.target' > /etc/systemd/system/clash.service \
+    && systemctl --system enable clash.service \
+    && mkdir -p /etc/clash \
+    && curl -sSL 'a/config.yaml' --output /etc/config.yaml
+"""
+[[bins.clash.hook]]
+user = 'root'
+on = ['uninstall']
+shebang = '/bin/sh -c'
+command = 'systemctl --system disable clash.service && rm -rf /etc/systemd/system/clash.service'
+
+[bins.yacd]
+github = 'haishanh/yacd'
+release = true
+pick = ['yacd.tar.xz']
+[[bins.yacd.hook]]
+user = 'root'
+on = ['install', 'update']
+shebang = '/bin/sh -c'
+command = 'rm -rf /etc/clash/ && mv yacd /etc/clash/'
+[[bins.yacd.hook]]
+user = 'root'
+on = ['uninstall']
+shebang = '/bin/sh -c'
+command = 'rm -r /etc/clash/yacd'
+
+[bins.poetry]
+local = 'pipx'
+[bins.poetry.completions.'_poetry']
+# 也支持文本内容
+# text = 'ap'
+# 运行命令获取输出内容
+command = 'poetry completions zsh'
+# 两种类型，fpath/source放在不同位置，在使用其它plugin manager加载时更方便
+type = 'fpath'
+# type = 'source'
+[[bins.poetry.hook]]
+shebang = '/bin/sh -c'
+command = "python3 -m pipx ensurepath"
+on = ['install']
+
+[bins.a]
+# only run hook
+[bins.a.hook]
+
+
+[bins.batch]
+names = ['a', 'b']
+
