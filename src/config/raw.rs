@@ -110,6 +110,8 @@ impl_deserialize_from_str! { github_repository, GitHubRepository, "a GitHub repo
 
 #[cfg(test)]
 mod tests {
+    use users::User;
+
     use super::*;
 
     #[test]
@@ -205,68 +207,296 @@ github = "{github2}"
         assert_eq!(config, raw);
         Ok(())
     }
+
+    #[test]
+    fn test_commands() -> Result<()> {
+        use std::os::unix::process::CommandExt;
+        use std::process::*;
+
+        let f = |id| {
+            let out = Command::new("sh")
+                .env_clear()
+                .arg("-c")
+                .arg("id; echo $HOME")
+                .uid(id)
+                .gid(id)
+                .spawn()?
+                .wait_with_output()?;
+            println!(
+                "user id: {}\nstdout: {}\nstderr: {}\nstatus: {}",
+                id,
+                String::from_utf8(out.stdout)?,
+                String::from_utf8(out.stderr)?,
+                out.status
+            );
+            Ok::<_, Error>(())
+        };
+
+        f(0)?;
+        f(1000)?;
+        f(0)?;
+        f(1000)?;
+
+        Ok(())
+    }
+}
+
+mod a {
+    use super::*;
+
     // new feature
     #[derive(Debug, PartialEq, Eq, Default, Getters, Serialize, Deserialize)]
     #[serde(default, rename_all = "kebab-case")]
-    struct Con {
-        pub bins: IndexMap<String, Bin>,
+    struct Config {
+        pub bins: Vec<Binary>,
     }
+
     #[derive(Debug, PartialEq, Eq, Default, Getters, Serialize, Deserialize)]
     #[serde(default, rename_all = "kebab-case")]
-    struct Bin {
-        github: Option<String>,
+    struct Binary {
+        pick: Option<Vec<String>>,
+
         #[serde(rename = "hook")]
         hooks: Option<Vec<Hook>>,
+
+        #[serde(rename = "bin")]
+        bins: Option<IndexMap<String, BinIn>>,
+
+        #[serde(flatten)]
+        git: Git,
+
+        snippet: Option<Snippet>,
     }
 
     #[derive(Debug, PartialEq, Eq, Default, Getters, Serialize, Deserialize)]
     #[serde(default, rename_all = "kebab-case")]
+    struct Snippet {
+        commands: Option<Vec<String>>,
+        urls: Option<Vec<String>>,
+    }
 
+    #[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+    #[serde(rename_all = "kebab-case")]
+    struct Git {
+        github: Option<String>,
+
+        #[serde(default)]
+        release: bool,
+
+        #[serde(default)]
+        prerelease: bool,
+
+        #[serde(flatten)]
+        reference: Option<GitReference>,
+    }
+
+    /// A Git reference.
+    #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub enum GitReference {
+        /// From the tip of a branch.
+        Branch(String),
+        /// From a specific revision.
+        Rev(String),
+        /// From a tag.
+        Tag(String),
+    }
+
+    /// Indicates a bin to be installed
+    #[derive(Debug, PartialEq, Eq, Default, Getters, Serialize, Deserialize)]
+    struct BinIn {
+        /// Select a bin installation from the downloaded files
+        pick: Option<String>,
+
+        /// Bin installation mode
+        #[serde(flatten)]
+        ty: Option<BinInType>,
+
+        /// Path to install bin
+        path: Option<String>,
+    }
+
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(tag = "type", rename_all = "kebab-case")]
+    enum BinInType {
+        Shim { template: Option<String> },
+        Link,
+        Symlink,
+        Copy,
+    }
+
+    #[derive(Debug, PartialEq, Eq, Default, Getters, Serialize, Deserialize)]
+    #[serde(default, rename_all = "kebab-case")]
     struct Hook {
         work_dir: Option<String>,
+
+        /// to execute command
+        shebang: Option<String>,
+
+        /// to do hook
         command: String,
+
+        /// when to execute
         #[serde(rename = "on")]
         ons: Vec<HookOn>,
+
+        /// the user who executed the command
+        user: Option<String>,
     }
+
     #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     enum HookOn {
         Install,
         Update,
+        Uninstall,
         Extract,
     }
+
+    #[derive(Debug, PartialEq, Eq, Getters, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    struct Completion {
+        pick: Option<Vec<String>>,
+
+        #[serde(rename = "type")]
+        ty: CompletionType,
+    }
+
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    enum CompletionType {
+        Fpath,
+        Source,
+    }
+
     #[test]
     fn test_raw() -> Result<()> {
         let s = r#"
-[bins.clash]
-github = 'a/b'
+[[bins]]
+github = "Dreamacro/clash"
 release = true
-pick = ['.*{{os}}.*']
-bin-pick-glob = ['clash-{{os}}*']
-exe-path = '$HOME/.local/bin'
+tag = 'premium'
+pick = ['clash-{{os}}-{{arch}}.*.gz']
 
-[[bins.clash.hook]]
-word-dir = 'a'
-command = 'sh'
-on = ['install', 'update']
-each_file = true
-pick-glob = ['clash-{{os}}*']
+[bins.bin.clash]
+pick = 'clash*'
+path = '/usr/local/bin'
+type = 'copy'
 
-[[bins.clash.hook]]
-word-dir = 'b'
-command = 'bash'
-on = ['extract']
+[[bins.hook]]
+user = 'root'
+on = ['install']
+shebang = '/bin/sh -c'
+command = 'echo test > a'
+
+[[bins.hook]]
+work-dir = '/usr/local/bin'
+user = 'root'
+on = ['uninstall']
+command = 'rm -rf a'
+
+[[bins.hook]]
+user = 'root'
+on = ['update', 'install', 'uninstall']
+command = 'systemctl daemon-reload'
 
 
-[bins.bat]
-github = "sharkdp/bat"
+[[bins]]
+pick = ['b']
+snippet.commands = ['python3 /a/b.py', 'python3 /a/c.py']
+snippet.urls = ['https://a.com/a', 'https://a.com/b']
+bin.mvnup.pick = 'a/b'
+
+
+[[bins]]
+github = "gohugoio/hugo"
 release = true
-
-
+pick = ['.*extended.*Linux.*tar.*']
+bin.hugo.pick = '*hugo*'
+[bins.hugo.completions._hugo]
+type = 'fpath'
+command = 'hugo completions zsh'
 
 "#;
-        let v: Con = toml::from_str(&s)?;
-        println!("{:?}", v);
+        let config: Config = toml::from_str(s)?;
+        println!("{:?}", config);
+        assert_eq!(config.bins.len(), 2);
+
+        let bin = &config.bins[0];
+        assert!(bin.snippet.is_none());
+        {
+            let git = &bin.git;
+            assert_eq!(git.github.as_deref(), Some("Dreamacro/clash"));
+            assert!(git.release);
+            assert_eq!(git.reference, Some(GitReference::Tag("premium".to_owned())));
+        }
+
+        assert_eq!(bin.pick.as_ref().map(|a| a.len()), Some(1));
+        assert_eq!(
+            bin.pick.as_ref().map(|a| &*a[0]),
+            Some("clash-{{os}}-{{arch}}.*.gz")
+        );
+
+        {
+            assert_eq!(bin.bins.as_ref().map(|a| a.len()), Some(1));
+            let binin = bin.bins.as_ref().map(|a| &a["clash"]);
+            assert_eq!(binin.unwrap().pick.as_deref(), Some("clash*"));
+            assert_eq!(binin.unwrap().path.as_deref(), Some("/usr/local/bin"));
+            assert_eq!(binin.unwrap().ty.as_ref(), Some(&BinInType::Copy));
+        }
+
+        {
+            assert_eq!(bin.hooks.as_ref().map(Vec::len), Some(3));
+            let hooks = bin.hooks.as_ref().unwrap();
+            assert_eq!(hooks[0].user.as_deref(), Some("root"));
+            assert_eq!(&hooks[0].ons, &[HookOn::Install]);
+            assert_eq!(hooks[0].shebang.as_deref(), Some("/bin/sh -c"));
+            assert_eq!(hooks[0].command, "echo test > a");
+            assert_eq!(hooks[0].work_dir, None);
+
+            assert_eq!(hooks[1].user.as_deref(), Some("root"));
+            assert_eq!(&hooks[1].ons, &[HookOn::Uninstall]);
+            assert_eq!(hooks[1].shebang, None);
+            assert_eq!(hooks[1].command, "rm -rf a");
+            assert_eq!(hooks[1].work_dir.as_deref(), Some("/usr/local/bin"));
+
+            assert_eq!(hooks[2].user.as_deref(), Some("root"));
+            assert_eq!(
+                &hooks[2].ons,
+                &[HookOn::Update, HookOn::Install, HookOn::Uninstall]
+            );
+            assert_eq!(hooks[2].shebang, None);
+            assert_eq!(hooks[2].command, "systemctl daemon-reload");
+            assert_eq!(hooks[2].work_dir, None);
+        }
+
+        let bin = &config.bins[1];
+        // assert!(bin.git.is_none());
+        {
+            assert!(bin.snippet.is_some());
+            assert_eq!(
+                bin.snippet.as_ref().and_then(|a| a.commands.as_ref()),
+                Some(
+                    &["python3 /a/b.py", "python3 /a/c.py"]
+                        .into_iter()
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
+                )
+            );
+            assert_eq!(
+                bin.snippet.as_ref().and_then(|a| a.urls.as_ref()),
+                Some(
+                    &["https://a.com/a", "https://a.com/b"]
+                        .into_iter()
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
+                )
+            );
+
+            let binin = bin.bins.as_ref().and_then(|a| a.get("mvnup"));
+            assert_eq!(binin.and_then(|a| a.pick.as_deref()), Some("a/b"))
+        }
+
         Ok(())
     }
 }
