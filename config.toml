@@ -13,6 +13,7 @@ shim-template = """
 #!/usr/bin/env sh
 "{{bins.exe_dir}}/{{name}}" "$@"
 """
+# user = 'cur'
 
 [pm.pip]
 install = 'python3 -m pip install {{name}}'
@@ -33,7 +34,7 @@ install = 'apt-get install {{name}}'
 github = "gohugoio/hugo"
 release = true
 pick = ".*extended.*Linux.*tar.*"
-[bins.hugo.bin.hugo]
+bin.hugo.pick = '*hugo*'
 [bins.hugo.completions._hugo]
 type = 'fpath'
 command = 'hugo completions zsh'
@@ -124,6 +125,11 @@ type = 'fpath'
 shebang = '/bin/sh -c'
 command = "python3 -m pipx ensurepath"
 on = ['install']
+
+[bins.mvn]
+snippets.command = 'python3 /a/b.py'
+pick = ['.*\.tar.gz$']
+bin.mvn.pick = '.*-bin'
 
 [bins.a]
 # only run hook
