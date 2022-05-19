@@ -110,8 +110,6 @@ impl_deserialize_from_str! { github_repository, GitHubRepository, "a GitHub repo
 
 #[cfg(test)]
 mod tests {
-    use users::User;
-
     use super::*;
 
     #[test]
@@ -266,6 +264,8 @@ mod a {
         git: Git,
 
         snippet: Option<Snippet>,
+
+        completion: Option<Completion>,
     }
 
     #[derive(Debug, PartialEq, Eq, Default, Getters, Serialize, Deserialize)]
@@ -356,17 +356,8 @@ mod a {
     #[derive(Debug, PartialEq, Eq, Getters, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     struct Completion {
-        pick: Option<Vec<String>>,
-
-        #[serde(rename = "type")]
-        ty: CompletionType,
-    }
-
-    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(rename_all = "kebab-case")]
-    enum CompletionType {
-        Fpath,
-        Source,
+        fpath: Option<Vec<String>>,
+        source: Option<Vec<String>>,
     }
 
     #[test]
@@ -413,14 +404,13 @@ github = "gohugoio/hugo"
 release = true
 pick = ['.*extended.*Linux.*tar.*']
 bin.hugo.pick = '*hugo*'
-[bins.hugo.completions._hugo]
-type = 'fpath'
-command = 'hugo completions zsh'
-
+[bins.completion]
+fpath = ['_*']
+source = ['.*.zsh']
 "#;
         let config: Config = toml::from_str(s)?;
         println!("{:?}", config);
-        assert_eq!(config.bins.len(), 2);
+        assert_eq!(config.bins.len(), 3);
 
         let bin = &config.bins[0];
         assert!(bin.snippet.is_none());
@@ -495,6 +485,36 @@ command = 'hugo completions zsh'
 
             let binin = bin.bins.as_ref().and_then(|a| a.get("mvnup"));
             assert_eq!(binin.and_then(|a| a.pick.as_deref()), Some("a/b"))
+        }
+
+        let bin = &config.bins[2];
+        {
+            let git = &bin.git;
+            assert_eq!(git.github.as_deref(), Some("gohugoio/hugo"));
+            assert!(git.release);
+            assert_eq!(git.reference, None);
+        }
+
+        {
+            let cmpl = bin.completion.as_ref();
+            assert_eq!(
+                cmpl.and_then(|a| a.fpath.as_ref()),
+                Some(
+                    &["_*"]
+                        .into_iter()
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
+                )
+            );
+            assert_eq!(
+                cmpl.and_then(|a| a.source.as_ref()),
+                Some(
+                    &[".*.zsh"]
+                        .into_iter()
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
+                )
+            );
         }
 
         Ok(())

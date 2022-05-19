@@ -23,7 +23,8 @@ install = 'pipx install {{name}}'
 update = 'pipx upgrade {{name}}'
 
 [pm.apt-get]
-install = 'apt-get install {{name}}'
+install = 'apt-get install {{#each names}}{{this}}{{#unless @last}} {{/unless}}{{/each}}'
+# install = 'apt-get install {{name}}'
 
 [pm.go]
 
@@ -38,9 +39,9 @@ bin.hugo.pick = '*hugo*'
 [[bins.hook]]
 on = ['install', 'update']
 command = "sh -c 'hugo completions zsh > _hugo'"
-[[bins.completions]]
-pick = '_hugo'
-type = 'fpath'
+[bins.completion]
+fpath = ['_*']
+source = ['.*.zsh']
 
 [[bins]]
 # clone latest
@@ -141,4 +142,3 @@ bin.mvn.pick = '.*-bin'
 [[bins]]
 batch = true
 names = ['a', 'b']
-
