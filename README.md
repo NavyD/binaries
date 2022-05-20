@@ -61,3 +61,79 @@ release时不同的仓库可能会有不同的命名方式，虽然基本是`bin
 由于存在不确定如何调用Bin --version，只能重试。在安装时要允许快速重试处理
 
 
+## 重构
+
+### Source
+
+支持3种不同的安装源
+
+#### snippet
+
+一个snippet就表示一个远程的bin文件，可以在大部分的bin中正常工作。
+
+##### git release
+
+如git release上的bin，可以直接转化为一些url下载即可。
+
+```toml
+[bins.clash]
+github = 'd/clash'
+release = true
+pick = ''
+```
+
+##### simple urls
+
+简单的snippet
+
+```toml
+[bins.ash]
+# pick = a
+[[snippets]]
+url = 'https://a.com/a'
+[[snippets]]
+url = 'https://a.com/b'
+```
+
+##### command urls
+
+通常，下载更新一个bin的url可能不是固定的，需要访问解析才能确定。snippet应该支持外部计算出url来下载如
+
+```toml
+[bins.maven]
+snippets.command = 'python3 /a/b.py'
+pick = ['a']
+```
+
+通过执行命令的执行结果(stdout)找出可用的urls，再pick出bin文件对应的url。
+
+### Git
+
+对于git仓库中的bin，如...p.zsh等，可能会关联仓库中的资源文件，直接clone仓库而不是使用snippet
+
+```toml
+[bins.goup]
+github = 'a/update-golang'
+branch = 'master'
+[bin.goup]
+pick = '*.sh'
+```
+
+### local
+
+通常软件可以通过包管理器安装，如ubuntu的apt-get，编程语言的包管理器rust的cargo，golang的go install，Python的pip等。binaries应该能手动管理这些包
+
+由于包管理器本身就有这些功能，这里只是做一层包装，可以自定义安装命令
+
+```toml
+[local.apt-get]
+user = 'root'
+[local.apt-get.hook]
+user = 'root'
+command = 'apt-get install {{#each names}}{{this}}{{#unless}} {{/unless}}{{/each}}'
+on = ['install']
+
+[local.apt-get.hook]
+command = 'apt-get purge {{#each names}}{{this}}{{#unless}} {{/unless}}{{/each}}'
+on = ['uninstall']
+```
