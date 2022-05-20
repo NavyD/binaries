@@ -71,43 +71,33 @@ release时不同的仓库可能会有不同的命名方式，虽然基本是`bin
 
 一个snippet就表示一个远程的bin文件，可以在大部分的bin中正常工作。
 
-##### git release
+* git release：如git release上的bin，可以直接转化为一些url下载即可。
 
-如git release上的bin，可以直接转化为一些url下载即可。
+  ```toml
+  [[bins]]
+  github = 'd/clash'
+  release = true
+  ```
 
-```toml
-[bins.clash]
-github = 'd/clash'
-release = true
-pick = ''
-```
+* simple urls：简单的snippet
 
-##### simple urls
+  ```toml
+  [[bins]]
+  snippet.urls = ['https://a.com/a']
+  ```
 
-简单的snippet
+* command urls：通常，下载更新一个bin的url可能不是固定的，需要访问解析才能确定。snippet应该支持外部计算出url来下载。通过执行命令的执行结果(stdout)找出可用的urls，再pick出bin文件对应的url。
 
-```toml
-[bins.ash]
-# pick = a
-[[snippets]]
-url = 'https://a.com/a'
-[[snippets]]
-url = 'https://a.com/b'
-```
+  ```toml
+  [[bins]]
+  snippet.commands = 'python3 /a/b.py'
+  ```
 
-##### command urls
+##### pick
 
-通常，下载更新一个bin的url可能不是固定的，需要访问解析才能确定。snippet应该支持外部计算出url来下载如
+由于在github release和snippet.command中可能需要过滤下载的url，使用正则选择出合适的url
 
-```toml
-[bins.maven]
-snippets.command = 'python3 /a/b.py'
-pick = ['a']
-```
-
-通过执行命令的执行结果(stdout)找出可用的urls，再pick出bin文件对应的url。
-
-### Git
+#### Git
 
 对于git仓库中的bin，如...p.zsh等，可能会关联仓库中的资源文件，直接clone仓库而不是使用snippet
 
@@ -119,7 +109,7 @@ branch = 'master'
 pick = '*.sh'
 ```
 
-### local
+#### local
 
 通常软件可以通过包管理器安装，如ubuntu的apt-get，编程语言的包管理器rust的cargo，golang的go install，Python的pip等。binaries应该能手动管理这些包
 
