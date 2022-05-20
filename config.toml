@@ -1,7 +1,7 @@
 [data]
 
 [default]
-[default.completions]
+[default.completion]
 path = '{{bins.completion.dir}}/{{bins.completion.type}}/{{name}}'
 
 [default.bin]
@@ -9,26 +9,39 @@ path = '{{bins.completion.dir}}/{{bins.completion.type}}/{{name}}'
 type = 'shim'
 # 默认安装到bin文件到文件`exe_dir/bin`
 path = '{{bins.exe_dir}}'
-shim-template = """
+template = """
 #!/usr/bin/env sh
 "{{bins.exe_dir}}/{{name}}" "$@"
 """
-# user = 'cur'
 
-[pm.pip]
-install = 'python3 -m pip install {{name}}'
+# install rust
+[[bins]]
+# 只有安装功能，不会响应update,check等功能
+[[bins.hook]]
+shebang = 'sh -c'
+command = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+on = ['install']
+# 在local之前之后的bins将会分开序列安装，不会出现并行导致local依赖未安装的问题
+# 同时可以使用local给bins分前后安装
+# [local.group1]
 
-[pm.pipx]
-install = 'pipx install {{name}}'
-update = 'pipx upgrade {{name}}'
+[local.apt-get]
+user = 'root'
+[[local.apt-get.hook]]
+command = 'apt-get install {{#each names}}{{this}}{{#unless}} {{/unless}}{{/each}}'
+on = ['install']
 
-[pm.apt-get]
-install = 'apt-get install {{#each names}}{{this}}{{#unless @last}} {{/unless}}{{/each}}'
-# install = 'apt-get install {{name}}'
+[[local.apt-get.hook]]
+command = 'apt-get purge {{#each names}}{{this}}{{#unless}} {{/unless}}{{/each}}'
+on = ['uninstall']
 
-[pm.go]
-
-[pm.cargo]
+[local.cargo]
+[[local.cargo.hook]]
+command = 'cargo install {{name}}'
+on = ['install', 'update']
+[[local.cargo.hook]]
+command = 'cargo install {{name}}'
+on = ['uninstall']
 
 
 [[bins]]
@@ -122,10 +135,11 @@ command = 'rm -r /etc/clash/yacd'
 
 [[bins]]
 local = 'pipx'
-[[bins.completions]]
-pick = '_poetry'
-# 两种类型，fpath/source放在不同位置，在使用其它plugin manager加载时更方便
-type = 'fpath'
+
+[bins.completion]
+fpath = ['_*']
+source = ['.*.zsh']
+
 # type = 'source'
 [[bins.hook]]
 shebang = '/bin/sh -c'
@@ -139,6 +153,7 @@ pick = ['.*\.tar.gz$']
 bin.mvn.pick = '.*-bin'
 
 
-[[bins]]
-batch = true
+[[multi-bins]]
 names = ['a', 'b']
+local = 'apt-get'
+# [multi-bins.hook]
