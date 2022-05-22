@@ -26,7 +26,7 @@ struct Binary {
     /// 对git文件和snippet url选择出合适的。支持正则，允许pick下载多个
     pick: Option<Vec<String>>,
 
-    #[serde(rename = "hook")]
+    // #[serde(rename = "hooks")]
     hooks: Option<Vec<Hook>>,
 
     #[serde(rename = "bin")]
@@ -44,10 +44,8 @@ struct Binary {
 #[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct Snippet {
-    #[serde(rename = "snippet-command")]
     command: Option<Command>,
 
-    #[serde(rename = "snippets")]
     urls: Option<Vec<String>>,
 }
 
@@ -304,28 +302,28 @@ pick = 'clash*'
 path = '/usr/local/bin'
 type = 'copy'
 
-[[bins.hook]]
+[[bins.hooks]]
 user = 'root'
 on = ['install']
 shebang = '/bin/sh -c'
-command = 'echo test > a'
+value = 'echo test > a'
 
-[[bins.hook]]
+[[bins.hooks]]
 work-dir = '/usr/local/bin'
 user = 'root'
 on = ['uninstall']
-command = 'rm -rf a'
+value = 'rm -rf a'
 
-[[bins.hook]]
+[[bins.hooks]]
 user = 'root'
 on = ['update', 'install', 'uninstall']
-command = 'systemctl daemon-reload'
+value = 'systemctl daemon-reload'
 
 
 [[bins]]
 pick = ['b']
-snippet-command = 'python3 /a/b.py'
-snippet.urls = ['https://a.com/a', 'https://a.com/b']
+command = 'python3 /a/b.py'
+urls = ['https://a.com/a', 'https://a.com/b']
 bin.mvnup.pick = 'a/b'
 
 
@@ -395,7 +393,7 @@ source = ['.*.zsh']
             assert_eq!(
                 bin.snippet.as_ref().and_then(|a| a.command.as_ref()),
                 Some(&Command {
-                    value: "".to_owned(),
+                    value: "python3 /a/b.py".to_owned(),
                     ..Default::default()
                 })
             );
