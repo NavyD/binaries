@@ -83,15 +83,17 @@ release时不同的仓库可能会有不同的命名方式，虽然基本是`bin
 
   ```toml
   [[bins]]
-  snippet.urls = ['https://a.com/a']
+  urls = ['https://a.com/a']
   ```
 
 * command urls：通常，下载更新一个bin的url可能不是固定的，需要访问解析才能确定。snippet应该支持外部计算出url来下载。通过执行命令的执行结果(stdout)找出可用的urls，再pick出bin文件对应的url。
 
   ```toml
   [[bins]]
-  snippet.commands = 'python3 /a/b.py'
+  command = 'python3 /a/b.py'
   ```
+
+  注意：使用command需要确定何时执行的问题，如果在每次检查或载入配置时执行，可能有点繁琐。如果使用config.lock比较当前配置是否被修改，只有改变配置后执行或install等动作时才执行可避免无意义重复的执行
 
 ##### pick
 
@@ -116,14 +118,28 @@ pick = '*.sh'
 由于包管理器本身就有这些功能，这里只是做一层包装，可以自定义安装命令
 
 ```toml
-[local.apt-get]
-user = 'root'
-[local.apt-get.hook]
+[locals.apt-get]
+[[locals.apt-get.hooks]]
 user = 'root'
 command = 'apt-get install {{#each names}}{{this}}{{#unless}} {{/unless}}{{/each}}'
 on = ['install']
 
-[local.apt-get.hook]
+[[locals.apt-get.hooks]]
 command = 'apt-get purge {{#each names}}{{this}}{{#unless}} {{/unless}}{{/each}}'
 on = ['uninstall']
 ```
+
+## .lock文件
+
+* 如何检查lock文件是否应该更新：比较文件修改时间：`.lock < .toml`
+  在配置文件.toml后，生成的lock文件时间应该总是滞后于.toml的，如果.toml修改了则时间是`.lock < .toml`，需要更新.lock文件
+
+## 基本支持
+
+### check for updates
+
+对于不同的source有不同的更新方式
+
+* git：可以通过git fetch等ssh,https,
+* snippet：通用的方法可以发送http head方式检查date header是否变化。但是一个问题url可能是固定的，所有的url不会再更新，所以有command计算url，比较前后的url是否变化来确定更新
+* local：有些pgk不支持检查更新，可以忽略对应的检查并给出提示
