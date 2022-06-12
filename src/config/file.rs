@@ -1,4 +1,7 @@
-use std::fmt;
+use std::{
+    fmt,
+    ops::{Deref, DerefMut},
+};
 
 use getset::Getters;
 use indexmap::IndexMap;
@@ -63,12 +66,42 @@ enum Source {
 
         #[serde(flatten)]
         reference: Option<GitReference>,
+
+        picks: Option<Vec<String>>,
     },
     Snippet {
         command: Option<Command>,
 
         urls: Option<Vec<String>>,
+
+        picks: Option<Vec<String>>,
+
+        check: Option<SnippetCheck>,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, Default)]
+pub struct Template(String);
+
+impl DerefMut for Template {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Deref for Template {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct SnippetCheck {
+    url: Option<Template>,
+    command: Option<Command>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -114,10 +147,22 @@ struct Exe {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 enum ExeType {
-    Shim { template: Option<String> },
+    Shim {
+        #[serde(default = "defaults::default_exe_type_template")]
+        template: String,
+    },
     Link,
     Symlink,
     Copy,
+}
+
+mod defaults {
+    pub fn default_exe_type_template() -> String {
+        r#"#!/usr/bin/env sh
+"{{bins.exe_dir}}/{{name}}" "$@"
+"#
+        .to_string()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Getters, Serialize, Deserialize)]
@@ -164,14 +209,8 @@ struct Completion {
 }
 
 enum Completions {
-    Fpath {
-        paths: Vec<String>,
-        mv: bool,
-    },
-    Source {
-        paths: Vec<String>,
-        
-    }
+    Fpath { paths: Vec<String>, mv: bool },
+    Source { paths: Vec<String> },
 }
 
 mod command {
@@ -383,6 +422,7 @@ source = ['.*.zsh']
                 release,
                 prerelease,
                 reference,
+                picks,
             } = bin.source.clone()
             {
                 assert_eq!(source, GitSource::Github("Dreamacro/clash".to_owned()));

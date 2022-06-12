@@ -140,6 +140,30 @@ on = ['uninstall']
 
 对于不同的source有不同的更新方式
 
-* git：可以通过git fetch等ssh,https,
-* snippet：通用的方法可以发送http head方式检查date header是否变化。但是一个问题url可能是固定的，所有的url不会再更新，所以有command计算url，比较前后的url是否变化来确定更新
-* local：有些pgk不支持检查更新，可以忽略对应的检查并给出提示
+#### git
+
+可以通过git fetch等ssh,https,
+
+#### snippet
+
+通用的方法可以发送http head方式检查date header是否变化。但是一个问题url可能是固定的，所有的url不会再更新，所以有command计算url，比较前后的url是否变化来确定更新。
+
+对于一个config.lock来说，一个snippet下载访问过的url可以记录server.date等时间，在更新的时候
+
+* 如果url是可以动态更新的，即可通过比较http head方法的header信息last-modified来更新，这个可以作为默认的更新方式
+* 如果url是固定不可更新的，可以通过使用update hooks来手动检查，注入对应的上次snippet下载信息，在command中自己判断，返回运行结果即可判断
+
+通常来说，一个文件的url是固定不能被更新的，不然不同时间访问得到的文件都不一样了，很难处理。有时候可能会使用父路径更新，如`https://archive.apache.org/dist/maven/maven-3/3.8.4/binaries/apache-maven-3.8.4-bin.tar.gz`可以使用`https://archive.apache.org/dist/maven/maven-3/`的head时间判断，但是无法通用，所以使用可注入信息执行手动command的才能解决
+
+另外，对于git release/tags转换的snippet时，应该是内置对应的update hook，无需配置。即在实现时config.lock额外保存git信息，可在更新时判断使用
+
+在考虑如何对git release的snippet实现更新时，发现可以简单的提供一个配置`bins.maven.snippet.check = '$url'`即可满足对应功能
+
+* 在使用snippet时内置检查对last-modified即可
+* 在使用git release时可自动设置config.lock文件snippet.check url实现检查更新
+
+当然，也可以支持配置command计算出的url
+
+#### local
+
+有些pgk不支持检查更新，可以忽略对应的检查并给出提示
