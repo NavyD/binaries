@@ -1,6 +1,7 @@
 use std::{
     fmt,
     ops::{Deref, DerefMut},
+    path::PathBuf,
 };
 
 use getset::Getters;
@@ -34,9 +35,6 @@ struct DefaultConfig {
 #[derive(Debug, PartialEq, Eq, Getters, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct Binary {
-    /// 对git文件和snippet url选择出合适的。支持正则，允许pick下载多个
-    picks: Option<Vec<String>>,
-
     hooks: Option<Vec<Hook>>,
 
     exes: Option<IndexMap<String, Exe>>,
@@ -69,15 +67,7 @@ enum Source {
 
         picks: Option<Vec<String>>,
     },
-    Snippet {
-        command: Option<Command>,
-
-        urls: Option<Vec<String>>,
-
-        picks: Option<Vec<String>>,
-
-        check: Option<SnippetCheck>,
-    },
+    Snippet(Snippet),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, Default)]
@@ -96,6 +86,11 @@ impl Deref for Template {
         &self.0
     }
 }
+impl From<&str> for Template {
+    fn from(s: &str) -> Self {
+        Template(s.to_string())
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -105,11 +100,16 @@ struct SnippetCheck {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-struct Snippet {
-    command: Option<Command>,
+enum Snippet {
+    Urls(Vec<String>),
+    Command(Command),
+    Github {
+        prerelease: bool,
 
-    urls: Option<Vec<String>>,
+        tag: Option<String>,
+
+        picks: Option<Vec<String>>,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -132,24 +132,26 @@ pub enum GitReference {
 
 /// Indicates a bin to be installed
 #[derive(Debug, PartialEq, Eq, Getters, Serialize, Deserialize)]
-struct Exe {
+pub struct Exe {
     /// Select a bin installation from the downloaded files
-    pick: Option<String>,
+    #[serde(default = "defaults::default_exe_type_pick")]
+    pick: Template,
 
     /// Bin installation mode
-    #[serde(flatten)]
-    ty: Option<ExeType>,
+    #[serde(flatten, default = "defaults::default_exe_type")]
+    ty: ExeType,
 
     /// Path to install bin
-    path: Option<String>,
+    #[serde(default = "defaults::default_exe_path")]
+    path: PathBuf,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
-enum ExeType {
+pub enum ExeType {
     Shim {
         #[serde(default = "defaults::default_exe_type_template")]
-        template: String,
+        template: Template,
     },
     Link,
     Symlink,
@@ -157,11 +159,40 @@ enum ExeType {
 }
 
 mod defaults {
-    pub fn default_exe_type_template() -> String {
+    use std::path::PathBuf;
+
+    use directories::{BaseDirs, ProjectDirs};
+    use once_cell::sync::Lazy;
+
+    use crate::CRATE_NAME;
+
+    use super::{ExeType, Template};
+
+    // static PROJECT_DIRS: Lazy<ProjectDirs> =
+    //     Lazy::new(|| ProjectDirs::from("xyz", "navyd", CRATE_NAME).expect("no project dirs"));
+
+    static BASE_DIRS: Lazy<BaseDirs> = Lazy::new(|| BaseDirs::new().expect("no base dir"));
+
+    pub fn default_exe_type() -> ExeType {
+        ExeType::Shim {
+            template: default_exe_type_template(),
+        }
+    }
+    pub fn default_exe_type_pick() -> Template {
+        // "{{data.bin.name}}".into()
+        todo!()
+    }
+    pub fn default_exe_type_template() -> Template {
         r#"#!/usr/bin/env sh
 "{{bins.exe_dir}}/{{name}}" "$@"
 "#
-        .to_string()
+        .into()
+    }
+    pub fn default_exe_path() -> PathBuf {
+        BASE_DIRS
+            .executable_dir()
+            .map(Into::into)
+            .expect("no executable dir")
     }
 }
 
@@ -199,6 +230,7 @@ enum HookOn {
     Update,
     Uninstall,
     Extract,
+    Check,
 }
 
 #[derive(Debug, PartialEq, Eq, Getters, Serialize, Deserialize)]
@@ -342,193 +374,191 @@ shebang = 'sh -c'
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use anyhow::Result;
+// #[cfg(test)]
+// mod tests {
+//     use anyhow::Result;
 
-    use super::*;
+//     use super::*;
 
-    #[test]
-    fn test_a() -> Result<()> {
-        let s = r#"
-[[bins]]
-github = "Dreamacro/clash"
-release = true
-tag = 'premium'
-picks = ['clash-{{os}}-{{arch}}.*.gz']"#;
-        let config: Config = toml::from_str(s)?;
-        println!("{:?}", config);
-        Ok(())
-    }
+//     #[test]
+//     fn test_a() -> Result<()> {
+//         let s = r#"
+// [[bins]]
+// github = "Dreamacro/clash"
+// release = true
+// tag = 'premium'
+// picks = ['clash-{{os}}-{{arch}}.*.gz']"#;
+//         let config: Config = toml::from_str(s)?;
+//         println!("{:?}", config);
+//         Ok(())
+//     }
 
-    #[test]
-    fn test_raw() -> Result<()> {
-        let s = r#"
-[[bins]]
-github = "Dreamacro/clash"
-release = true
-tag = 'premium'
-picks = ['clash-{{os}}-{{arch}}.*.gz']
+//     #[test]
+//     fn test_raw() -> Result<()> {
+//         let s = r#"
+// [[bins]]
+// github = "Dreamacro/clash"
+// release = true
+// tag = 'premium'
+// picks = ['clash-{{os}}-{{arch}}.*.gz']
 
-[bins.exes.clash]
-pick = 'clash*'
-path = '/usr/local/bin'
-type = 'copy'
+// [bins.exes.clash]
+// pick = 'clash*'
+// path = '/usr/local/bin'
+// type = 'copy'
 
-[[bins.hooks]]
-user = 'root'
-on = ['install']
-shebang = '/bin/sh -c'
-command = 'echo test > a'
+// [[bins.hooks]]
+// user = 'root'
+// on = ['install']
+// shebang = '/bin/sh -c'
+// command = 'echo test > a'
 
-[[bins.hooks]]
-work-dir = '/usr/local/bin'
-user = 'root'
-on = ['uninstall']
-command = 'rm -rf a'
+// [[bins.hooks]]
+// work-dir = '/usr/local/bin'
+// user = 'root'
+// on = ['uninstall']
+// command = 'rm -rf a'
 
-[[bins.hooks]]
-user = 'root'
-on = ['update', 'install', 'uninstall']
-command = 'systemctl daemon-reload'
+// [[bins.hooks]]
+// user = 'root'
+// on = ['update', 'install', 'uninstall']
+// command = 'systemctl daemon-reload'
 
+// [[bins]]
+// picks = ['b']
+// command = 'python3 /a/b.py'
+// urls = ['https://a.com/a', 'https://a.com/b']
+// exes.mvnup.pick = 'a/b'
 
-[[bins]]
-picks = ['b']
-command = 'python3 /a/b.py'
-urls = ['https://a.com/a', 'https://a.com/b']
-exes.mvnup.pick = 'a/b'
+// [[bins]]
+// github = "gohugoio/hugo"
+// release = true
+// picks = ['.*extended.*Linux.*tar.*']
+// exes.hugo.pick = '*hugo*'
 
+// [bins.completion]
+// fpath = ['_*']
+// source = ['.*.zsh']
+//     "#;
+//         let config: Config = toml::from_str(s)?;
+//         println!("{:?}", config);
+//         assert_eq!(config.bins.len(), 3);
 
-[[bins]]
-github = "gohugoio/hugo"
-release = true
-picks = ['.*extended.*Linux.*tar.*']
-exes.hugo.pick = '*hugo*'
+//         let bin = &config.bins[0];
+//         {
+//             assert!(matches!(bin.source, Source::Git { .. }));
+//             if let Source::Git {
+//                 source,
+//                 release,
+//                 prerelease,
+//                 reference,
+//                 picks,
+//             } = bin.source.clone()
+//             {
+//                 assert_eq!(source, GitSource::Github("Dreamacro/clash".to_owned()));
+//                 assert!(release);
+//                 assert!(!prerelease);
+//                 assert_eq!(reference, Some(GitReference::Tag("premium".to_owned())));
+//             }
+//         }
 
-[bins.completion]
-fpath = ['_*']
-source = ['.*.zsh']
-    "#;
-        let config: Config = toml::from_str(s)?;
-        println!("{:?}", config);
-        assert_eq!(config.bins.len(), 3);
+//         // assert_eq!(bin.picks.as_ref().map(|a| a.len()), Some(1));
+//         // assert_eq!(
+//         //     bin.picks.as_ref().map(|a| &*a[0]),
+//         //     Some("clash-{{os}}-{{arch}}.*.gz")
+//         // );
 
-        let bin = &config.bins[0];
-        {
-            assert!(matches!(bin.source, Source::Git { .. }));
-            if let Source::Git {
-                source,
-                release,
-                prerelease,
-                reference,
-                picks,
-            } = bin.source.clone()
-            {
-                assert_eq!(source, GitSource::Github("Dreamacro/clash".to_owned()));
-                assert!(release);
-                assert!(!prerelease);
-                assert_eq!(reference, Some(GitReference::Tag("premium".to_owned())));
-            }
-        }
+//         // {
+//         //     assert_eq!(bin.exes.as_ref().map(|a| a.len()), Some(1));
+//         //     let binin = bin.exes.as_ref().map(|a| &a["clash"]);
+//         //     assert_eq!(binin.unwrap().pick.as_deref(), Some("clash*"));
+//         //     assert_eq!(binin.unwrap().path.as_deref(), Some("/usr/local/bin"));
+//         //     assert_eq!(binin.unwrap().ty.as_ref(), Some(&ExeType::Copy));
+//         // }
 
-        // assert_eq!(bin.picks.as_ref().map(|a| a.len()), Some(1));
-        // assert_eq!(
-        //     bin.picks.as_ref().map(|a| &*a[0]),
-        //     Some("clash-{{os}}-{{arch}}.*.gz")
-        // );
+//         // {
+//         //     assert_eq!(bin.hooks.as_ref().map(Vec::len), Some(3));
+//         //     let hooks = bin.hooks.as_ref().unwrap();
+//         //     assert_eq!(&hooks[0].ons, &[HookOn::Install]);
+//         //     assert_eq!(hooks[0].command.user.as_deref(), Some("root"));
+//         //     assert_eq!(hooks[0].command.shebang.as_deref(), Some("/bin/sh -c"));
+//         //     assert_eq!(hooks[0].command.value, "echo test > a");
+//         //     assert_eq!(hooks[0].command.work_dir, None);
 
-        // {
-        //     assert_eq!(bin.exes.as_ref().map(|a| a.len()), Some(1));
-        //     let binin = bin.exes.as_ref().map(|a| &a["clash"]);
-        //     assert_eq!(binin.unwrap().pick.as_deref(), Some("clash*"));
-        //     assert_eq!(binin.unwrap().path.as_deref(), Some("/usr/local/bin"));
-        //     assert_eq!(binin.unwrap().ty.as_ref(), Some(&ExeType::Copy));
-        // }
+//         //     assert_eq!(&hooks[1].ons, &[HookOn::Uninstall]);
+//         //     assert_eq!(hooks[1].command.user.as_deref(), Some("root"));
+//         //     assert_eq!(hooks[1].command.shebang, None);
+//         //     assert_eq!(hooks[1].command.value, "rm -rf a");
+//         //     assert_eq!(hooks[1].command.work_dir.as_deref(), Some("/usr/local/bin"));
 
-        // {
-        //     assert_eq!(bin.hooks.as_ref().map(Vec::len), Some(3));
-        //     let hooks = bin.hooks.as_ref().unwrap();
-        //     assert_eq!(&hooks[0].ons, &[HookOn::Install]);
-        //     assert_eq!(hooks[0].command.user.as_deref(), Some("root"));
-        //     assert_eq!(hooks[0].command.shebang.as_deref(), Some("/bin/sh -c"));
-        //     assert_eq!(hooks[0].command.value, "echo test > a");
-        //     assert_eq!(hooks[0].command.work_dir, None);
+//         //     assert_eq!(
+//         //         &hooks[2].ons,
+//         //         &[HookOn::Update, HookOn::Install, HookOn::Uninstall]
+//         //     );
+//         //     assert_eq!(hooks[2].command.user.as_deref(), Some("root"));
+//         //     assert_eq!(hooks[2].command.shebang, None);
+//         //     assert_eq!(hooks[2].command.value, "systemctl daemon-reload");
+//         //     assert_eq!(hooks[2].command.work_dir, None);
+//         // }
 
-        //     assert_eq!(&hooks[1].ons, &[HookOn::Uninstall]);
-        //     assert_eq!(hooks[1].command.user.as_deref(), Some("root"));
-        //     assert_eq!(hooks[1].command.shebang, None);
-        //     assert_eq!(hooks[1].command.value, "rm -rf a");
-        //     assert_eq!(hooks[1].command.work_dir.as_deref(), Some("/usr/local/bin"));
+//         // let bin = &config.bins[1];
+//         // assert!(bin.git.is_none());
+//         // {
+//         //     assert_eq!(
+//         //         bin.snippet.as_ref().and_then(|a| a.command.as_ref()),
+//         //         Some(&Command {
+//         //             value: "python3 /a/b.py".to_owned(),
+//         //             ..Default::default()
+//         //         })
+//         //     );
+//         //     assert_eq!(
+//         //         bin.snippet.as_ref().and_then(|a| a.urls.as_ref()),
+//         //         Some(
+//         //             &["https://a.com/a", "https://a.com/b"]
+//         //                 .into_iter()
+//         //                 .map(ToOwned::to_owned)
+//         //                 .collect::<Vec<_>>()
+//         //         )
+//         //     );
 
-        //     assert_eq!(
-        //         &hooks[2].ons,
-        //         &[HookOn::Update, HookOn::Install, HookOn::Uninstall]
-        //     );
-        //     assert_eq!(hooks[2].command.user.as_deref(), Some("root"));
-        //     assert_eq!(hooks[2].command.shebang, None);
-        //     assert_eq!(hooks[2].command.value, "systemctl daemon-reload");
-        //     assert_eq!(hooks[2].command.work_dir, None);
-        // }
+//         //     let binin = bin.exes.as_ref().and_then(|a| a.get("mvnup"));
+//         //     assert_eq!(binin.and_then(|a| a.pick.as_deref()), Some("a/b"))
+//         // }
 
-        // let bin = &config.bins[1];
-        // assert!(bin.git.is_none());
-        // {
-        //     assert_eq!(
-        //         bin.snippet.as_ref().and_then(|a| a.command.as_ref()),
-        //         Some(&Command {
-        //             value: "python3 /a/b.py".to_owned(),
-        //             ..Default::default()
-        //         })
-        //     );
-        //     assert_eq!(
-        //         bin.snippet.as_ref().and_then(|a| a.urls.as_ref()),
-        //         Some(
-        //             &["https://a.com/a", "https://a.com/b"]
-        //                 .into_iter()
-        //                 .map(ToOwned::to_owned)
-        //                 .collect::<Vec<_>>()
-        //         )
-        //     );
+//         // let bin = &config.bins[2];
+//         // {
+//         //     assert!(bin.git.is_some());
+//         //     let git = bin.git.as_ref().unwrap();
+//         //     assert_eq!(git.source, GitSource::Github("gohugoio/hugo".to_owned()));
+//         //     assert!(git.release);
+//         //     assert_eq!(git.reference, None);
+//         // }
 
-        //     let binin = bin.exes.as_ref().and_then(|a| a.get("mvnup"));
-        //     assert_eq!(binin.and_then(|a| a.pick.as_deref()), Some("a/b"))
-        // }
+//         // {
+//         //     let cmpl = bin.completion.as_ref();
+//         //     assert_eq!(
+//         //         cmpl.and_then(|a| a.fpath.as_ref()),
+//         //         Some(
+//         //             &["_*"]
+//         //                 .into_iter()
+//         //                 .map(ToOwned::to_owned)
+//         //                 .collect::<Vec<_>>()
+//         //         )
+//         //     );
+//         //     assert_eq!(
+//         //         cmpl.and_then(|a| a.source.as_ref()),
+//         //         Some(
+//         //             &[".*.zsh"]
+//         //                 .into_iter()
+//         //                 .map(ToOwned::to_owned)
+//         //                 .collect::<Vec<_>>()
+//         //         )
+//         //     );
+//         // }
 
-        // let bin = &config.bins[2];
-        // {
-        //     assert!(bin.git.is_some());
-        //     let git = bin.git.as_ref().unwrap();
-        //     assert_eq!(git.source, GitSource::Github("gohugoio/hugo".to_owned()));
-        //     assert!(git.release);
-        //     assert_eq!(git.reference, None);
-        // }
-
-        // {
-        //     let cmpl = bin.completion.as_ref();
-        //     assert_eq!(
-        //         cmpl.and_then(|a| a.fpath.as_ref()),
-        //         Some(
-        //             &["_*"]
-        //                 .into_iter()
-        //                 .map(ToOwned::to_owned)
-        //                 .collect::<Vec<_>>()
-        //         )
-        //     );
-        //     assert_eq!(
-        //         cmpl.and_then(|a| a.source.as_ref()),
-        //         Some(
-        //             &[".*.zsh"]
-        //                 .into_iter()
-        //                 .map(ToOwned::to_owned)
-        //                 .collect::<Vec<_>>()
-        //         )
-        //     );
-        // }
-
-        Ok(())
-    }
-}
+//         Ok(())
+//     }
+// }
 
 #[cfg(test)]
 mod tests11 {

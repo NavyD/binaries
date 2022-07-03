@@ -19,6 +19,31 @@ download`，但无法做到自动化，如多平台的安装
 * 下载时可以自动根据平台选择或可配置自动选择
 * 有基本的安装更新卸载功能
 * 快速下载安装
+* 自动管理：检测配置文件的更改自动安装，下载，更新，卸载，同时要有效率
+
+### 自动管理
+
+在配置好后，应该仅用一条命令完成bin的更改。
+
+#### 如何检测配置文件bin的更新
+
+维护一份lock文件，如果发现存在lock文件且配置文件修改时间比lock文件要新，则说明bins可能需要更改，然后通过比较lock文件与配置文件转换后的是否一致来判断是否应该更新
+
+在检测到一个bin的source,hook,exes等部分改变后，应该仅更新对应的部分即可（发现source改变后可能需要重新安装），为此，在lock文件中应该保存配置文件的原始信息，并在此基础上添加其它信息
+
+注意：我们不需要部分更新，最消耗时间的是下载阶段，其它如exe,completion,hook时间可以完全重装。
+
+那么如何跳过下载阶段？
+
+snippet.command何时执行？
+
+应该在raw->config时执行，当然，比较lock必要时才执行。
+这是由于对于git release而言，转换成的snippet将丢失git source信息，无法在
+
+#### 如何转换配置文件到lock文件
+
+由于配置文件为了方便的格式问题，其实现可能多了许多冗余，直接转换是不可取的。可以使用一个中间配置格式过渡
+
 
 ## 实现
 
@@ -134,6 +159,17 @@ on = ['uninstall']
 * 如何检查lock文件是否应该更新：比较文件修改时间：`.lock < .toml`
   在配置文件.toml后，生成的lock文件时间应该总是滞后于.toml的，如果.toml修改了则时间是`.lock < .toml`，需要更新.lock文件
 
+### 如何处理.toml与.lock的转换
+
+.toml用于定义用户的配置，
+
+.lock用于保存执行后的用户定义配置，方便处理下次改变的部分。如果发现.toml中添加了新的bins则再下次启动进程时自动安装，移除了对应bin时卸载，当更新了一个bins的配置时则更新需要的部分。
+而更新update与check需要手动执行。
+
+当然，这种执行可以通过配置改变，也可以手动install，uninstall
+
+如果不这样，直接使用.lock文件保存.toml大部分配置是繁琐的，直接保存一份.toml.copy不是更好。所以在.lock文件中应该放入安装下载后的配置
+
 ## 基本支持
 
 ### check for updates
@@ -163,6 +199,15 @@ on = ['uninstall']
 * 在使用git release时可自动设置config.lock文件snippet.check url实现检查更新
 
 当然，也可以支持配置command计算出的url
+
+对于命令式的snippet如
+
+```toml
+[bins.maven]
+# get url: https://archive.apache.org/dist/maven/maven-3/3.8.4/binaries/apache-maven-3.8.4-bin.tar.gz
+snippet.command = 'python3 mvnup.py'
+snippet.check = 'https://archive.apache.org/dist/maven/maven-3/'
+```
 
 #### local
 
