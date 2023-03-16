@@ -8,6 +8,8 @@ use getset::Getters;
 use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use super::GitHubRepository;
+
 #[derive(Debug, PartialEq, Eq, Getters, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct Config {
@@ -45,29 +47,54 @@ struct Binary {
     completion: Option<Completion>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 // #[serde(tag = "source", rename_all = "kebab-case")]
 #[serde(untagged, rename_all = "kebab-case")]
 enum Source {
-    Local {
-        local: String,
-    },
-    Git {
-        #[serde(flatten)]
-        source: GitSource,
+    Urls { urls: Vec<String> },
 
-        #[serde(default)]
-        release: bool,
+    Local { local: String },
+    // Git {
+    //     url: String,
 
-        #[serde(default)]
-        prerelease: bool,
+    //     #[serde(flatten)]
+    //     reference: Option<GitReference>,
 
-        #[serde(flatten)]
-        reference: Option<GitReference>,
+    //     picks: Option<Vec<String>>,
+    // },
+    // Snippet(Snippet),
+    // Command(Command),
+    // GithubRelease {
+    //     repo: GitHubRepository,
 
-        picks: Option<Vec<String>>,
-    },
-    Snippet(Snippet),
+    //     #[serde(default)]
+    //     prerelease: bool,
+
+    //     #[serde(default)]
+    //     tag: Option<String>,
+
+    //     #[serde(default)]
+    //     picks: Option<Vec<String>>,
+    // },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct Snippet {
+    urls: Option<Vec<String>>,
+
+    command: Option<Command>,
+
+    repo: Option<GitHubRepository>,
+
+    #[serde(default)]
+    prerelease: bool,
+
+    #[serde(default)]
+    tag: Option<String>,
+
+    #[serde(default)]
+    picks: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, Default)]
@@ -92,25 +119,24 @@ impl From<&str> for Template {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-struct SnippetCheck {
-    url: Option<Template>,
-    command: Option<Command>,
-}
+// #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+// #[serde(untagged, rename_all = "kebab-case")]
+// enum Snippet {
+//     Urls(Vec<String>),
+//     Command(Command),
+//     GithubRelease {
+//         repo: GitHubRepository,
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-enum Snippet {
-    Urls(Vec<String>),
-    Command(Command),
-    Github {
-        prerelease: bool,
+//         #[serde(default)]
+//         prerelease: bool,
 
-        tag: Option<String>,
+//         #[serde(default)]
+//         tag: Option<String>,
 
-        picks: Option<Vec<String>>,
-    }
-}
+//         #[serde(default)]
+//         picks: Option<Vec<String>>,
+//     },
+// }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -374,6 +400,33 @@ shebang = 'sh -c'
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+
+    #[test]
+    fn de_source() -> Result<()> {
+        let val = "test";
+        let s = format!(r#"local = '{}'"#, val);
+        let source = toml::from_str::<Source>(&s)?;
+        assert!(matches!(source, Source::Local { local } if local == val));
+
+        // let val = "echo test";
+        // let s = format!(r#"command = '{}'"#, val);
+        // let source = toml::from_str::<Source>(&s)?;
+        // assert!(matches!(&source, Source::Command(cmd) if cmd.value == val));
+
+        let val = ["https://test.a", "https://test.b"].map(ToString::to_string);
+        let s = format!(r#"urls = ["https://test.a", "https://test.b"]"#);
+        // let source = toml::from_str::<Source>(&s)?;
+        let urls = Source::Urls(val.to_vec());
+        println!("{}", toml::to_string_pretty(&urls)?);
+        // assert!(matches!(&source, Source::Urls(urls) if urls == &val));
+        Ok(())
+    }
+}
+
 // #[cfg(test)]
 // mod tests {
 //     use anyhow::Result;
@@ -559,27 +612,3 @@ shebang = 'sh -c'
 //         Ok(())
 //     }
 // }
-
-#[cfg(test)]
-mod tests11 {
-    use super::*;
-
-    #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-
-    struct A {
-        #[serde(flatten)]
-        source: Source,
-    }
-
-    #[test]
-    fn test_name() {
-        let s = r#"
-command = 'a'
-#github = 'ttess'
-"#;
-        let config: A = toml::from_str(s).unwrap();
-        println!("{:?}", config);
-        // assert!(config.bins[0].git.is_some());
-        // assert!(config.bins[1].git.is_none());
-    }
-}

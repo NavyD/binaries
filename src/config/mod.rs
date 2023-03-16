@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use self::raw::RawConfig;
 
 mod file;
+mod c;
 pub mod raw;
 
 #[derive(Debug, Getters, Setters, Clone, Builder)]
